@@ -91,7 +91,11 @@ eq(ns.QueueSize(), 2 + #ns.CLASSES, "single level splits by class")
 M.advance(6); ns.NextSearch()
 eq(M.sentWho[w + 4], '1-1 c-"Warrior"', "class query")
 M.answerWho(full, 60)
-eq(ns.QueueSize(), 1 + #ns.CLASSES, "a full class search cannot split further")
+eq(ns.QueueSize(), 1 + #ns.CLASSES + #M.races, "a full class search splits by race")
+M.advance(6); ns.NextSearch()
+eq(M.sentWho[w + 5], '1-1 c-"Warrior" r-"Orc"', "race query")
+M.answerWho(full, 55)
+eq(ns.QueueSize(), #ns.CLASSES + #M.races, "a full race search cannot split further")
 
 -- no answer: the search goes back on the queue
 M.advance(6)
@@ -106,9 +110,12 @@ check(not db.prospects["Late Answer"], "an answer after the timeout is not trust
 
 -- zone filter and a refused call
 M.advance(10)
-ns.StartSearch(5, 6, "MAGE", "Durotar")
+db.opts.classes.MAGE = true
+ns.StartSearch(5, 6, "Durotar")
 eq(M.sentWho[#M.sentWho], '5-6 c-"Mage" z-"Durotar"', "class and zone query")
 M.answerWho({})
+ns.ToggleClass(nil)
+ns.SetLevels(1, 60)
 M.advance(10)
 M.whoError = true
 check(not ns.StartSearch(1, 2), "refused search reports failure")
@@ -215,7 +222,10 @@ eq(db.stats.joined, joinedBefore + 1, "repeat join line not double counted")
 M.fire("CHAT_MSG_SYSTEM", "|Hplayer:Bob Smith|h[Bob Smith]|h declines your guild invitation.")
 eq(db.prospects["Bob Smith"].status, "declined", "decline recorded through a player link")
 M.fire("CHAT_MSG_SYSTEM", "No player named 'Cy Dunn' is currently playing.")
-check(not db.prospects["Cy Dunn"], "offline player forgotten")
+eq(db.prospects["Cy Dunn"].status, "whispered", "someone already whispered stays on record when they log off")
+db.prospects["Nia Offline"] = { name = "Nia Offline", status = "new", seen = time(), level = 10 }
+M.fire("CHAT_MSG_SYSTEM", "No player named 'Nia Offline' is currently playing.")
+check(not db.prospects["Nia Offline"], "an offline player nobody contacted is forgotten")
 M.fire("CHAT_MSG_SYSTEM", "Dee Fox is already in a guild.")
 eq(db.prospects["Dee Fox"].status, "guilded", "already guilded recorded")
 M.fire("CHAT_MSG_SYSTEM", "Stranger Danger has joined the guild.") -- not ours: ignored
@@ -317,7 +327,8 @@ db.opts.lo, db.opts.hi = 1, 60
 SlashCmdList["TORCHCALL"]("")
 check(TorchcallFrame and TorchcallFrame:IsShown(), "window opens")
 for _, tab in ipairs({ "Contacted", "Message", "Prospects" }) do check(M.click(tab), "tab " .. tab) end
-check(M.click("Any class"), "class button cycles")
+check(M.click("Warrior"), "class button picks a class")
+eq(db.opts.classes.WARRIOR, true, "class picked")
 check(M.click("Any zone"), "zone button toggles")
 M.advance(10)
 local whoBefore = #M.sentWho
@@ -331,7 +342,8 @@ M.advance(6)
 check(M.click("Next search"), "next search button")
 check(M.sentWho[#M.sentWho]:find("^1%-30 "), "queued half is sent")
 M.answerWho({ P("Moe Nunn"), P("Ned Orr") })
-check(M.click("Any class", "RightButton") or M.click("Warrior", "RightButton"), "changing a filter")
+check(M.click("All"), "changing a filter")
+eq(next(db.opts.classes), nil, "All clears the class filter")
 M.advance(6)
 check(M.click("Search"), "changed filters start a fresh plan")
 check(M.sentWho[#M.sentWho]:find("^1%-60"), "fresh plan uses the full range again")
@@ -359,10 +371,144 @@ for _, line in ipairs(db.log) do check(not line:find(" error: ", 1, true), "no e
 M.advance(10)
 SlashCmdList["TORCHCALL"]("search 1-60")
 SlashCmdList["TORCHCALL"]("search 20-30")
+eq(db.opts.lo, 1, "the refused plan does not move the level filter")
 M.answerWho(full, 200)
 M.advance(6)
 ns.NextSearch()
 eq(M.sentWho[#M.sentWho], "1-30", "the first plan carries on, the overlapping one was refused")
+M.answerWho({})
+
+
+-- 10b. filters: classes and levels decide what is searched, shown and reached -----
+ns.SetLevels(1, 60)
+seed({ P("Ada Mage", "", 22, "MAGE"), P("Ben Priest", "", 35, "PRIEST"), P("Cal Warrior", "", 12, "WARRIOR"),
+       P("Dot Rogue", "", 58, "ROGUE"), P("\208\152\208\178\208\176\208\189 Mage", "", 30, "MAGE"), P("Se\195\177ora Luz", "", 31, "MAGE") })
+local function names(kind)
+  local rows, hidden = ns.List(kind or "new")
+  local set = {}
+  for _, p in ipairs(rows) do set[p.name] = true end
+  return set, hidden, rows
+end
+local shownNow, hiddenNow = names()
+check(shownNow["Ada Mage"] and shownNow["Cal Warrior"] and hiddenNow == 0, "no filter shows everyone")
+ns.ToggleClass("MAGE"); ns.ToggleClass("PRIEST")
+shownNow, hiddenNow = names()
+check(shownNow["Ada Mage"] and shownNow["Ben Priest"], "picked classes show")
+check(not shownNow["Cal Warrior"] and not shownNow["Dot Rogue"], "other classes are hidden")
+eq(hiddenNow, 2, "hidden count")
+eq(ns.Counts().hidden, 2, "summary hidden count")
+ns.SetLevels(20, 32)
+shownNow = names()
+check(shownNow["Ada Mage"] and not shownNow["Ben Priest"], "level range filters the list")
+db.opts.latin = true
+shownNow = names()
+check(not shownNow["\208\152\208\178\208\176\208\189 Mage"], "Latin filter hides a Cyrillic name")
+check(shownNow["Se\195\177ora Luz"], "Latin filter keeps an accented Latin name")
+db.opts.latin = false
+-- Next only reaches people who pass the filters
+M.advance(5)
+for _ = 1, 6 do
+  local t = ns.NextTarget()
+  if not t then break end
+  check(t.class == "MAGE" and t.level >= 20 and t.level <= 32, "Next target passes the filters: " .. t.name)
+  check(ns.Next(), "next on a filtered target")
+  M.advance(5)
+end
+eq(db.prospects["Cal Warrior"].status, "new", "a filtered-out player was never contacted")
+eq(db.prospects["Dot Rogue"].status, "new", "nor the other one")
+ok, why = ns.Next()
+check(not ok and why:find("hidden"), "Next says when everyone left is filtered out")
+-- a search with classes picked asks for each class
+M.advance(6)
+local q0 = #M.sentWho
+check(ns.StartSearch(20, 32), "class search starts")
+eq(M.sentWho[q0 + 1], '20-32 c-"Priest"', "first picked class, in display order")
+eq(ns.QueueSize(), 1, "one more search queued for the other class")
+M.answerWho({})
+M.advance(6); ns.NextSearch()
+eq(M.sentWho[q0 + 2], '20-32 c-"Mage"', "second picked class")
+M.answerWho({})
+-- all nine picked is the same as none
+for _, token in ipairs(ns.CLASSES) do db.opts.classes[token] = true end
+eq(#ns.PickedClasses(), 0, "every class picked means no class filter")
+ns.ToggleClass(nil)
+ns.SetLevels(1, 60)
+-- sorting
+ns.SetSort("level")
+local _, _, sorted = names()
+check(#sorted >= 2 and (sorted[1].level or 0) >= (sorted[2].level or 0), "sort by level, highest first")
+ns.SetSort("level")
+_, _, sorted = names()
+check((sorted[1].level or 0) <= (sorted[2].level or 0), "pressing again reverses it")
+ns.SetSort("name")
+_, _, sorted = names()
+check(sorted[1].name <= sorted[2].name, "sort by name")
+ns.SetSort("bogus")
+eq(db.opts.sort, "name", "an unknown sort key is ignored")
+ns.SetSort("seen"); if db.opts.sortUp then ns.SetSort("seen") end
+-- slash filters
+SlashCmdList["TORCHCALL"]("class mage pri")
+check(db.opts.classes.MAGE and db.opts.classes.PRIEST and not db.opts.classes.PALADIN, "slash class picks by prefix")
+SlashCmdList["TORCHCALL"]("class all")
+eq(next(db.opts.classes), nil, "slash class all clears")
+SlashCmdList["TORCHCALL"]("level 40-10")
+check(db.opts.lo == 10 and db.opts.hi == 40, "slash level sets the range in order")
+SlashCmdList["TORCHCALL"]("level 1-60")
+
+-- 10c. which message works: sent, answered, joined ------------------------------
+db.opts.template = 1
+db.templates[1] = "A brand new pitch for {name}."
+local key1 = ns.TemplateKey(db.templates[1])
+eq(ns.TemplateStat(key1).sent, 0, "a message never sent has no results")
+eq(db.tstats[key1], nil, "and looking does not create a record")
+seed({ P("Tia Stat") })
+M.advance(5)
+check(ns.Whisper("Tia Stat"), "whisper for the stats test")
+local t1 = ns.TemplateStat(key1)
+local sent0, rep0, join0 = 0, t1.replied, t1.joined
+eq(t1.sent, sent0 + 1, "sent counted for the message used")
+M.fire("CHAT_MSG_WHISPER", "ok", "Tia Stat")
+M.fire("CHAT_MSG_WHISPER", "hello?", "Tia Stat")
+eq(t1.replied, rep0 + 1, "an answer is counted once")
+M.advance(5)
+check(ns.Invite("Tia Stat"), "invite for the stats test")
+M.fire("CHAT_MSG_SYSTEM", "Tia Stat has joined the guild.")
+eq(t1.joined, join0 + 1, "a join is credited to the message that opened")
+db.templates[1] = "A reworded pitch for {name}."
+eq(ns.TemplateStat(ns.TemplateKey(db.templates[1])).sent, 0, "rewording a message starts its results from zero")
+eq(ns.TemplateStat(key1).sent, 1, "and the old wording keeps its own")
+db.templates[1] = ns.TEMPLATES[1]
+for i = 1, 60 do ns.TemplateStat(ns.TemplateKey("wording " .. i), "sent") end
+local kept = 0
+for _ in pairs(db.tstats) do kept = kept + 1 end
+check(kept <= 40, "message results are capped (" .. kept .. ")")
+
+-- 10d. the welcome: guild chat, once, only for someone who joined ---------------
+M.advance(5)
+local g0 = #M.sentChat
+ok, why = ns.Welcome("Dot Rogue")
+check(not ok, "no welcome for someone who has not joined")
+check(ns.Welcome("Tia Stat"), "welcome sent")
+eq(M.sentChat[g0 + 1][2], "GUILD", "welcome goes to guild chat")
+check(M.sentChat[g0 + 1][1]:find("Tia", 1, true), "welcome names the player")
+M.advance(5)
+check(not ns.Welcome("Tia Stat"), "never welcomed twice")
+eq(#M.sentChat, g0 + 1, "and nothing was sent")
+check(#ns.Render(ns.WELCOME, long) <= 255, "default welcome fits")
+
+-- 10e. key bindings do exactly what the buttons do ------------------------------
+check(type(Torchcall_KeyNext) == "function" and type(Torchcall_KeySearch) == "function", "binding functions exist")
+check(BINDING_NAME_TORCHCALL_NEXT and BINDING_NAME_TORCHCALL_SEARCH and BINDING_HEADER_TORCHCALL, "binding names exist")
+M.advance(10)
+local kc, ki, kw = #M.sentChat, #M.invited, #M.sentWho
+Torchcall_KeyNext()
+eq((#M.sentChat - kc) + (#M.invited - ki), 1, "one key press is one whisper or one invite")
+Torchcall_KeyNext()
+eq((#M.sentChat - kc) + (#M.invited - ki), 1, "a second press inside the gap sends nothing")
+Torchcall_KeySearch()
+eq(#M.sentWho - kw, 1, "one key press is one search")
+Torchcall_KeySearch()
+eq(#M.sentWho - kw, 1, "a second press while it is out sends nothing")
 M.answerWho({})
 
 -- 11. nothing contacts anyone without a press --------------------------------
@@ -394,6 +540,142 @@ check(not db.prospects["Old New"], "stale waiting player pruned")
 check(not db.prospects["Old Whisper"], "old contact pruned after 60 days")
 check(db.prospects["Old Skip"] ~= nil, "skips are kept")
 check(db.prospects["Old Decline"] ~= nil, "a decline is remembered for good")
+
+-- 13b. a contacted player is never asked again, even after the record expires --------
+seed({ P("Zed Forever"), P("Yan Skipped"), P("Xi Taken") })
+M.advance(5)
+check(ns.Whisper("Zed Forever"), "whisper before the long wait")
+ns.Skip("Yan Skipped")
+M.fire("CHAT_MSG_ADDON", "Torchcall", "C;1;abcdef;Xi Taken", "GUILD", "Mira Officer")
+M.advance(61 * 86400)
+M.fire("PLAYER_LOGIN")
+check(not db.prospects["Zed Forever"], "the detailed record is dropped after 60 days")
+check(db.contacted["Zed Forever"] ~= nil, "the name is remembered for good")
+seed({ P("Zed Forever"), P("Xi Taken"), P("New Face") })
+check(not db.prospects["Zed Forever"], "a search 61 days later does not bring them back as new")
+check(not db.prospects["Xi Taken"], "nor someone a guildmate contacted")
+check(db.prospects["New Face"] ~= nil, "a new player is still found")
+check(not ns.Whisper("Zed Forever"), "and they cannot be whispered again")
+ok, why = ns.Forget("Yan Skipped")
+check(not ok and why:find("already contacted"), "forget does not erase a contact record")
+-- data saved by 1.0.0 has no such memory: it is rebuilt from the records at load
+db.contacted = nil
+db.prospects["Old Contact"] = { name = "Old Contact", status = "whispered", t = time() - 100 }
+M.fire("ADDON_LOADED", "Torchcall")
+check(TorchcallDB.contacted == nil, "sanity: load only runs once per session")
+M.reset(false)
+ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall"); M.fire("PLAYER_LOGIN")
+db = TorchcallDB
+check(db.contacted["Old Contact"] ~= nil, "an upgrade from 1.0.0 remembers everyone already contacted")
+
+-- 13c. levels the game will not give, and level input -------------------------------
+seed({ { fullName = "No Level", fullGuildName = "", level = M.secret(), filename = "MAGE", classStr = "Mage", area = "Durotar", raceStr = "Orc" },
+       P("Lvl Sixty", "", 60, "MAGE") })
+ns.SetLevels(1, 60)
+local function listed(name) for _, p in ipairs((ns.List("new"))) do if p.name == name then return true end end return false end
+check(listed("No Level"), "with no level range set, an unknown level is shown")
+ns.SetLevels(20, 30)
+check(not listed("No Level"), "with a level range set, an unknown level does not pass")
+check(not listed("Lvl Sixty"), "nor a level outside it")
+local a, b = ns.SetLevels(0, 0); check(a == 1 and b == 1, "level 0 clamps to 1")
+a, b = ns.SetLevels(100, 200); check(a == 80 and b == 80, "levels above the ceiling clamp")
+a, b = ns.SetLevels(55, 5); check(a == 5 and b == 55, "a reversed range is put in order")
+a, b = ns.SetLevels("x", nil); check(a == 1 and b == 60, "junk falls back to the full range")
+ns.SetLevels(1, 60)
+
+-- 13d. the alphabet filter ------------------------------------------------------
+for name, want in pairs({ ["Bob Smith"] = true, ["Se\195\177ora Luz"] = true, ["Zo\195\171 O'Neil"] = true,
+                          ["Nguy\225\187\133n V\196\131n"] = true, ["\208\152\208\178\208\176\208\189"] = false, ["\206\145\206\187\206\173\206\190"] = false,
+                          ["\236\157\180\236\136\156"] = false, ["\230\157\142\229\176\143"] = false, ["Bob \240\159\148\165"] = false, ["Bad\255"] = false }) do
+  eq(ns.LatinName(name), want, "Latin check for " .. name)
+end
+
+-- 13e. another who search at the same moment ---------------------------------------
+M.advance(10)
+check(ns.StartSearch(10, 20), "our search goes out")
+C_FriendList.SendWho("warrior", 2) -- you, the who window or another addon
+check(not ns.SearchPending(), "a competing search cancels ours")
+eq(ns.QueueSize(), 1, "and puts it back on the queue")
+M.answerWho({ P("From Theirs"), P("Also Theirs") })
+check(not db.prospects["From Theirs"], "whatever arrives next is not read as our answer")
+M.advance(6)
+check(ns.NextSearch(), "our search can be sent again")
+M.answerWho({ P("From Ours") })
+check(db.prospects["From Ours"] ~= nil, "and its own answer is read")
+-- the who window keeps its results while it is open
+WhoFrame = M.newFrame("Frame", "WhoFrame")
+M.advance(6); ns.StartSearch(10, 20); M.answerWho({})
+eq(M.whoToUi, true, "who routing is left on while Blizzard's who window is open")
+WhoFrame:Hide()
+M.advance(6); ns.StartSearch(10, 20); M.answerWho({})
+eq(M.whoToUi, false, "and off again once it is closed")
+
+-- 13f. a plan always finishes, even when every answer is full -----------------------
+M.advance(10)
+ns.SetLevels(1, 8)
+local plan0, sentInPlan = #M.sentWho, {}
+check(ns.StartSearch(1, 8), "worst-case plan starts")
+local rounds = 0
+repeat
+  rounds = rounds + 1
+  local text = M.sentWho[#M.sentWho]
+  check(not sentInPlan[text], "no search is sent twice in one plan: " .. text)
+  sentInPlan[text] = true
+  -- a full page of exactly what was asked for, so the server looks honest
+  local wantClass, wantRace, page = text:match('c%-"(%a+)"'), text:match('r%-"(%a+)"'), {}
+  for i = 1, 50 do page[i] = P("Crowd " .. i, "X", 1, wantClass and wantClass:upper() or "WARRIOR", wantRace) end
+  M.answerWho(page, 999)
+  M.advance(6)
+until not ns.NextSearch() or rounds > 600
+eq(rounds, 15 + 8 * #ns.CLASSES + 8 * #ns.CLASSES * #M.races, "every level, class and race is visited exactly once, then it stops")
+eq(ns.QueueSize(), 0, "nothing left queued")
+ns.SetLevels(1, 60)
+
+-- 13g. the reload gap -----------------------------------------------------------------
+seed({ P("Gap One"), P("Gap Two") })
+check(ns.Whisper("Gap One"), "whisper just before a reload")
+M.reset(false)
+ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall"); M.fire("PLAYER_LOGIN")
+db = TorchcallDB
+ok, why = ns.Whisper("Gap Two")
+check(not ok and why:find("Next whisper"), "the whisper gap survives a reload")
+check(not ns.StartSearch(1, 60), "and so does the who gap")
+M.advance(6)
+
+-- 13h. key bindings file ------------------------------------------------------------------
+local binds = M.bindings("Torchcall")
+eq(#binds, 3, "three bindings")
+for _, bnd in ipairs(binds) do
+  check(_G["BINDING_NAME_" .. bnd.name] ~= nil, "binding " .. bnd.name .. " has a display name")
+  eq(bnd.category, "ADDONS", "binding " .. bnd.name .. " is filed under AddOns")
+  local okRun, err = pcall(bnd.run)
+  check(okRun, "binding " .. bnd.name .. " runs: " .. tostring(err))
+  M.advance(10)
+  if ns.SearchPending() then M.answerWho({}) end
+end
+if TorchcallFrame and TorchcallFrame:IsShown() then TorchcallFrame:Hide() end
+
+-- 14. a server that ignores the class part of a search ---------------------------
+-- (kept last: once seen, the addon stops trusting class searches for the session)
+ns.SetLevels(1, 60)
+ns.ToggleClass("MAGE"); ns.ToggleClass("ROGUE")
+M.advance(10)
+local b0 = #M.sentWho
+check(ns.StartSearch(1, 60), "class search against a server that ignores classes")
+eq(M.sentWho[b0 + 1], '1-60 c-"Rogue"', "asks for the first class")
+M.answerWho({ P("Wrong Class", "", 20, "WARRIOR"), P("Right Rogue", "", 20, "ROGUE"), P("Right Mage", "", 21, "MAGE") })
+eq(ns.QueueSize(), 0, "the answer already was the plain search, so nothing is left to repeat it")
+local seenNow = {}
+for _, p in ipairs((ns.List("new"))) do seenNow[p.name] = true end
+check(seenNow["Right Rogue"] and seenNow["Right Mage"], "picked classes still listed")
+check(not seenNow["Wrong Class"], "and the class filter is applied here instead")
+M.advance(6)
+check(ns.StartSearch(1, 60), "later plans skip the class part")
+eq(M.sentWho[#M.sentWho], "1-60", "one plain search")
+M.answerWho({})
+eq(ns.errors, nil, "no handler errors at the very end")
 
 M.realPrint(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

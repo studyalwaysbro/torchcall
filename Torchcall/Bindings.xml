@@ -1,0 +1,11 @@
+<Bindings>
+	<Binding name="TORCHCALL_NEXT" header="TORCHCALL" category="ADDONS">
+		Torchcall_KeyNext();
+	</Binding>
+	<Binding name="TORCHCALL_SEARCH" category="ADDONS">
+		Torchcall_KeySearch();
+	</Binding>
+	<Binding name="TORCHCALL_TOGGLE" category="ADDONS">
+		Torchcall_OnCompartmentClick();
+	</Binding>
+</Bindings>

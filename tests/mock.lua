@@ -1,7 +1,7 @@
 -- Minimal stand-in for the WoW client API, enough to load and drive Torchcall offline.
 local M = { now = 1000, wall = 1791400000, timers = {}, sentAddon = {}, sentChat = {}, sentWho = {}, invited = {},
             printed = {}, frames = {}, lockdown = false, inGuild = true, canInvite = true, myGuild = "The True Torchmen",
-            myName = "Vesh Torchman", who = {}, whoTotal = nil, whoToUi = false, addonResult = 0, zone = "Durotar" }
+            myName = "Vesh Torchman", who = {}, races = { { name = "Orc", ID = 2 }, { name = "Troll", ID = 8 }, { name = "Tauren", ID = 6 }, { name = "Undead", ID = 5 } }, whoTotal = nil, whoToUi = false, addonResult = 0, zone = "Durotar" }
 
 -- secret values: any use other than passing them around blows up
 local secretMT = {
@@ -34,7 +34,7 @@ function Ambiguate(n) return (n:gsub("%-.*$", "")) end
 UNKNOWNOBJECT = "Unknown"
 RAID_CLASS_COLORS = { WARRIOR = { r = 0.78, g = 0.61, b = 0.43 }, MAGE = { r = 0.25, g = 0.78, b = 0.92 } }
 SOUNDKIT = { TELL_MESSAGE = 3081 }
-function PlaySound() end
+function PlaySound(id, extra) assert(type(id) == "number" and extra == nil, "PlaySound takes the sound id only") end
 UISpecialFrames = {}
 SlashCmdList = {}
 function GetBuildInfo() return "1.60.1", "70245", "Oct 6 2026", 16001 end
@@ -79,53 +79,75 @@ C_ChatInfo = {
   SendAddonMessage = function(prefix, msg, channel) if M.lockdown then return 11 end if M.addonResult ~= 0 then return M.addonResult end M.sentAddon[#M.sentAddon + 1] = { prefix, msg, channel } return 0 end,
   SendChatMessage = function(msg, channel, lang, target)
     if M.chatError then error("blocked") end
+    assert(type(msg) == "string" and #msg <= 255, "chat message too long or not text")
+    if M.guard then M.guard(channel, target or msg, msg) end
     M.sentChat[#M.sentChat + 1] = { msg, channel, target }
   end,
 }
-C_GuildInfo = { Invite = function(name) M.invited[#M.invited + 1] = name end }
-C_FriendList = {
+C_GuildInfo = { Invite = function(name)
+  if M.inviteError then error("blocked") end
+  if M.guard then M.guard("INVITE", name) end
+  M.invited[#M.invited + 1] = name
+end }
+local function freshFriendList() return {
   SetWhoToUi = function(on) M.whoToUi = on end,
-  SendWho = function(text, origin) if M.whoError then error("blocked") end M.sentWho[#M.sentWho + 1] = text end,
+  SendWho = function(text, origin)
+    if M.whoError then error("blocked") end
+    if M.guard and text ~= "someone else's search" then M.guard("who", text) end
+    M.sentWho[#M.sentWho + 1] = text
+  end,
   GetNumWhoResults = function() return math.min(#M.who, 50), M.whoTotal or #M.who end,
   GetWhoInfo = function(i) return M.who[i] end,
-}
+  GetWhoRaceFilters = function() return M.races end,
+} end
+C_FriendList = freshFriendList()
 -- answer the search that was just sent with these players
 function M.answerWho(players, total)
   M.who, M.whoTotal = players, total
   M.fire("WHO_LIST_UPDATE")
 end
-function M.player(name, guild, level, class)
-  return { fullName = name, fullGuildName = guild or "", level = level or 10, raceStr = "Orc",
+function M.player(name, guild, level, class, race)
+  return { fullName = name, fullGuildName = guild or "", level = level or 10, raceStr = race or "Orc",
            classStr = class and (class:sub(1, 1) .. class:sub(2):lower()) or "Warrior", area = "Durotar",
            filename = class or "WARRIOR", gender = 2 }
 end
 
 -- frames --------------------------------------------------------------------
+-- Each widget type answers only the methods that type really has on this client (checked
+-- against Blizzard's interface source). Calling anything else is an error, the same as in game.
+local function noop() end
+local REGION = { SetPoint = noop, ClearAllPoints = noop, SetAllPoints = noop, SetSize = noop, SetWidth = noop, SetHeight = noop,
+  GetWidth = function() return 140 end, GetCenter = function() return 0, 0 end, GetEffectiveScale = function() return 1 end,
+  Show = function(f) local was = f.__shown f.__shown = true if not was and f.__scripts.OnShow then f.__scripts.OnShow(f) end end,
+  Hide = function(f) f.__shown = false end, IsShown = function(f) return f.__shown end,
+  GetName = function(f) return f.__name end, GetParent = function(f) return f.__parent end }
+local FRAME = { RegisterEvent = function(f, e) f.__events[e] = true end, UnregisterEvent = function(f, e) f.__events[e] = nil end,
+  SetScript = function(f, name, fn) assert(fn == nil or type(fn) == "function", "SetScript needs a function") f.__scripts[name] = fn end,
+  GetScript = function(f, name) return f.__scripts[name] end,
+  CreateFontString = function(f) return M.newFrame("FontString", nil, f) end,
+  CreateTexture = function(f) return M.newFrame("Texture", nil, f) end,
+  EnableMouse = noop, EnableMouseWheel = noop, SetFrameStrata = noop, SetFrameLevel = noop, SetClampedToScreen = noop,
+  SetMovable = noop, RegisterForDrag = noop, StartMoving = noop, StopMovingOrSizing = noop }
+local function setText(f, t) assert(type(t) == "string" or type(t) == "number", "SetText needs text, got " .. type(t)) f.__text = t end
+local function getText(f) return f.__text end
+local EXTRA = {
+  Frame = {},
+  Button = { SetText = setText, GetText = getText, RegisterForClicks = noop, LockHighlight = noop, UnlockHighlight = noop, SetHighlightTexture = noop },
+  EditBox = { SetText = setText, GetText = getText, SetAutoFocus = noop, SetMaxLetters = noop, HasFocus = function() return false end, ClearFocus = noop },
+  GameTooltip = { SetOwner = noop, Show = REGION.Show, AddLine = function(f, text) assert(type(text) == "string") f.__lines[#f.__lines + 1] = text end },
+  FontString = { SetText = setText, GetText = getText, SetJustifyH = noop, SetJustifyV = noop, SetWordWrap = noop },
+  Texture = { SetTexture = noop, SetColorTexture = noop },
+}
 local frameMT = {}
 frameMT.__index = function(self, key)
-  local known = {
-    RegisterEvent = function(f, e) f.__events[e] = true end,
-    UnregisterEvent = function(f, e) f.__events[e] = nil end,
-    SetScript = function(f, name, fn) f.__scripts[name] = fn end,
-    GetScript = function(f, name) return f.__scripts[name] end,
-    Show = function(f) local was = f.__shown f.__shown = true if not was and f.__scripts.OnShow then f.__scripts.OnShow(f) end end,
-    Hide = function(f) f.__shown = false end,
-    IsShown = function(f) return f.__shown end,
-    SetText = function(f, t) assert(type(t) == "string" or type(t) == "number", "SetText needs text, got " .. type(t)) f.__text = t end,
-    GetText = function(f) return f.__text end,
-    GetName = function(f) return f.__name end,
-    GetParent = function(f) return f.__parent end,
-    GetWidth = function() return 140 end,
-    GetCenter = function() return 0, 0 end,
-    GetEffectiveScale = function() return 1 end,
-    CreateFontString = function(f) return M.newFrame("FontString", nil, f) end,
-    CreateTexture = function(f) return M.newFrame("Texture", nil, f) end,
-    AddLine = function(f, text) assert(type(text) == "string") f.__lines[#f.__lines + 1] = text end,
-    StartMoving = function() end, StopMovingOrSizing = function() end,
-  }
-  if known[key] then return known[key] end
-  if key == "TitleText" or key == "TitleContainer" then return nil end
-  if type(key) == "string" and key:match("^[A-Z]") then return function() end end -- any other widget method
+  local kind = self.__kind
+  local found = (EXTRA[kind] or {})[key] or REGION[key]
+  if not found and kind ~= "FontString" and kind ~= "Texture" then found = FRAME[key] end
+  if found then return found end
+  if key == "SetBackdrop" and self.__template == "BackdropTemplate" then return noop end
+  if type(key) == "string" and key:match("^[A-Z]") and key ~= "TitleText" and key ~= "TitleContainer" and key ~= "SetBackdrop" then
+    error(kind .. " has no method " .. key, 2)
+  end
   return nil
 end
 function M.newFrame(kind, name, parent, template)
@@ -149,12 +171,51 @@ end
 -- press the first button whose label starts with this text
 function M.click(label, button)
   for _, f in ipairs(M.frames) do
-    if f.__kind == "Button" and type(f.__text) == "string" and f.__text:sub(1, #label) == label and f.__scripts.OnClick then
+    local text = type(f.__text) == "string" and f.__text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+    if f.__kind == "Button" and text and text:sub(1, #label) == label and f.__scripts.OnClick then
       f.__scripts.OnClick(f, button or "LeftButton")
       return true
     end
   end
   return false
+end
+
+-- start over as a fresh login: no frames, timers or records, saved variables kept unless asked
+function M.reset(wipe)
+  for _, f in ipairs(M.frames) do if f.__name then _G[f.__name] = nil end end
+  M.frames, M.timers = {}, {}
+  M.sentAddon, M.sentChat, M.sentWho, M.invited, M.printed = {}, {}, {}, {}, {}
+  M.lockdown, M.inGuild, M.canInvite, M.addonResult = false, true, true, 0
+  M.chatError, M.whoError, M.inviteError, M.who, M.whoTotal, M.whoToUi = nil, nil, nil, {}, nil, false
+  UIParent = M.newFrame("Frame", "UIParent")
+  Minimap = M.newFrame("Frame", "Minimap")
+  GameTooltip = M.newFrame("GameTooltip", "GameTooltip")
+  SlashCmdList = {}
+  C_FriendList = freshFriendList()
+  WhoFrame = nil
+  if wipe then TorchcallDB = nil end
+end
+
+-- Bindings.xml: every command a key can run must compile and must only call functions that exist.
+function M.bindings(dir)
+  local f = assert(io.open(dir .. "/Bindings.xml"))
+  local xml = f:read("*a")
+  f:close()
+  local out = {}
+  for name, attrs, body in xml:gmatch('<Binding name="([%w_]+)"([^>]*)>(.-)</Binding>') do
+    out[#out + 1] = { name = name, category = attrs:match('category="([^"]+)"'), header = attrs:match('header="([^"]+)"'),
+                      run = assert(loadstring(body), "binding " .. name .. " does not compile") }
+  end
+  return out
+end
+
+-- the client's post-hook: the original runs, then the hook, and a hook error never reaches the caller
+function hooksecurefunc(tbl, name, hook)
+  local original = assert(tbl[name], "nothing to hook")
+  tbl[name] = function(...)
+    original(...)
+    pcall(hook, ...)
+  end
 end
 
 function M.load(dir, files)

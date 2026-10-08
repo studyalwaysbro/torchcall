@@ -1,8 +1,8 @@
 ## Interface: 16001
 ## Title: Torchcall
-## Notes: Guild recruiting for The True Torchmen. Finds unguilded players with who searches, keeps a prospect list, and whispers or invites one player per click. Type /torchcall.
+## Notes: Guild recruiting for The True Torchmen. Finds unguilded players by level and class, keeps a prospect list, and whispers or invites one player per press. Type /torchcall.
 ## Author: The True Torchmen
-## Version: 1.0.0
+## Version: 1.1.0
 ## SavedVariables: TorchcallDB
 ## IconTexture: Interface\Icons\INV_Torch_Lit
 ## AddonCompartmentFunc: Torchcall_OnCompartmentClick

@@ -96,6 +96,7 @@ local function markTaken(name, by)
   local list = TorchcallDB.prospects
   local p = list[name]
   if p and p.status ~= "new" then return false end
+  TorchcallDB.contacted[name] = time()
   list[name] = { name = name, status = "taken", by = by, t = time(),
                  level = p and p.level, class = p and p.class, classStr = p and p.classStr, zone = p and p.zone }
   return true

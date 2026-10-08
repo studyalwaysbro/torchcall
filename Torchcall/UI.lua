@@ -9,8 +9,8 @@ ns.UI = UI
 local ICON = "Interface\\Icons\\INV_Torch_Lit"
 local GOLD, WHITE, GREY, ORANGE, GREEN = "|cffffd100", "|cffffffff", "|cff9d9d9d", "|cffff7d0a", "|cff40d040"
 local ROWS, ROW_HEIGHT = 12, 21
-local COLS = { { "Player", 150, "LEFT" }, { "Lvl", 28, "RIGHT" }, { "Class", 70, "LEFT" },
-               { "Zone", 130, "LEFT" }, { "Status", 86, "LEFT" } }
+local COLS = { { "Player", 150, "LEFT", "name" }, { "Lvl", 28, "RIGHT", "level" }, { "Class", 70, "LEFT", "class" },
+               { "Zone", 130, "LEFT", "zone" }, { "Status", 86, "LEFT", "seen" } }
 local MODES = { "whisper", "invite" }
 local MODE_LABEL = { whisper = "Next does: whisper", invite = "Next does: invite" }
 local STATUS_LABEL = { new = "new", whispered = "whispered", invited = "invited", joined = GREEN .. "joined|r",
@@ -19,7 +19,7 @@ local STATUS_LABEL = { new = "new", whispered = "whispered", invited = "invited"
 local opts
 local main, minimapButton
 local currentTab, offset = 1, 0
-local searchClass, zoneOnly = nil, false
+local zoneOnly = false
 
 local function classColored(name, class)
   local c = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
@@ -55,10 +55,9 @@ local planKey -- the filters the queued searches were built from
 
 -- What the search controls say right now, and one string to compare plans by.
 local function searchInputs()
-  local lo = main and tonumber(main.lo:GetText()) or opts.lo
-  local hi = main and tonumber(main.hi:GetText()) or opts.hi
+  local lo, hi = opts.lo, opts.hi
   local zone = zoneOnly and currentZone() or nil
-  return lo, hi, zone, table.concat({ tostring(lo), tostring(hi), searchClass or "", zone or "" }, "|")
+  return lo, hi, zone, table.concat({ tostring(lo), tostring(hi), table.concat(ns.PickedClasses(), ","), zone or "" }, "|")
 end
 
 local function startSearch()
@@ -68,7 +67,7 @@ local function startSearch()
     ns.NextSearch()
   else -- nothing queued, or the filters changed: start over
     planKey = key
-    ns.StartSearch(lo, hi, searchClass, zone)
+    ns.StartSearch(lo, hi, zone)
   end
   UI.Refresh()
 end
@@ -141,7 +140,8 @@ local function buildRow(list, r)
   row.whisper = makeButton(row, "Whisper", 62, 19)
   row.whisper:SetPoint("RIGHT", row.invite, "LEFT", -3, 0)
   row.whisper:SetScript("OnClick", function()
-    if row.name then act(ns.Whisper, row.name, row.followup) end
+    if not row.name then return end
+    if row.welcome then act(ns.Welcome, row.name) else act(ns.Whisper, row.name, row.followup) end
   end)
   row:SetScript("OnEnter", function(self)
     local p = self.name and TorchcallDB.prospects[self.name]
@@ -158,7 +158,7 @@ end
 
 local function buildMessagePanel(f)
   local panel = CreateFrame("Frame", nil, f)
-  panel:SetPoint("TOPLEFT", 16, -138)
+  panel:SetPoint("TOPLEFT", 16, -162)
   panel:SetPoint("BOTTOMRIGHT", -16, 48)
 
   panel.title = makeLabel(panel, "GameFontNormal")
@@ -184,27 +184,41 @@ local function buildMessagePanel(f)
   end)
   panel.count = makeLabel(panel, "GameFontDisableSmall")
   panel.count:SetPoint("TOPLEFT", 0, -50)
+  panel.results = makeLabel(panel, "GameFontHighlightSmall")
+  panel.results:SetPoint("TOPRIGHT", 0, -50)
   local previewLabel = makeLabel(panel, "GameFontNormalSmall", "What the next player on the list would read")
-  previewLabel:SetPoint("TOPLEFT", 0, -72)
+  previewLabel:SetPoint("TOPLEFT", 0, -70)
   panel.preview = makeLabel(panel, "GameFontHighlight")
-  panel.preview:SetPoint("TOPLEFT", 0, -88)
-  panel.preview:SetPoint("TOPRIGHT", 0, -88)
-  panel.preview:SetHeight(56)
+  panel.preview:SetPoint("TOPLEFT", 0, -86)
+  panel.preview:SetPoint("TOPRIGHT", 0, -86)
+  panel.preview:SetHeight(44)
   panel.preview:SetJustifyH("LEFT")
   panel.preview:SetJustifyV("TOP")
   panel.preview:SetWordWrap(true)
 
   local replyLabel = makeLabel(panel, "GameFontNormal", "Follow-up, sent by the Link button to someone who answered")
-  replyLabel:SetPoint("TOPLEFT", 0, -160)
+  replyLabel:SetPoint("TOPLEFT", 0, -140)
   panel.reply = makeEdit(panel, 640, 255)
-  panel.reply:SetPoint("TOPLEFT", 6, -184)
+  panel.reply:SetPoint("TOPLEFT", 6, -162)
   panel.reply:SetScript("OnTextChanged", function(self, userInput)
     if not userInput then return end
     TorchcallDB.reply = self:GetText() or ""
     UI.RefreshMessage()
   end)
   panel.replyCount = makeLabel(panel, "GameFontDisableSmall")
-  panel.replyCount:SetPoint("TOPLEFT", 0, -210)
+  panel.replyCount:SetPoint("TOPLEFT", 0, -186)
+
+  local welcomeLabel = makeLabel(panel, "GameFontNormal", "Guild chat welcome, said by the Welcome button when someone you recruited joins")
+  welcomeLabel:SetPoint("TOPLEFT", 0, -208)
+  panel.welcome = makeEdit(panel, 640, 255)
+  panel.welcome:SetPoint("TOPLEFT", 6, -230)
+  panel.welcome:SetScript("OnTextChanged", function(self, userInput)
+    if not userInput then return end
+    TorchcallDB.welcome = self:GetText() or ""
+    UI.RefreshMessage()
+  end)
+  panel.welcomeCount = makeLabel(panel, "GameFontDisableSmall")
+  panel.welcomeCount:SetPoint("TOPLEFT", 0, -254)
 
   local tokens = makeLabel(panel, "GameFontDisableSmall",
     "You can use {name} {fullname} {level} {class} {zone} {guild}. The game cuts a message at 255 characters.")
@@ -215,6 +229,7 @@ local function buildMessagePanel(f)
     TorchcallDB.templates = {}
     for i, t in ipairs(ns.TEMPLATES) do TorchcallDB.templates[i] = t end
     TorchcallDB.reply = ns.REPLY
+    TorchcallDB.welcome = ns.WELCOME
     opts.template = 1
     UI.Refresh()
   end)
@@ -233,7 +248,7 @@ local function buildMain()
     local close = CreateFrame("Button", nil, f, "UIPanelCloseButton")
     close:SetPoint("TOPRIGHT", 0, 0)
   end
-  f:SetSize(700, 470)
+  f:SetSize(700, 500)
   f:SetPoint("CENTER")
   f:SetFrameStrata("HIGH")
   f:SetClampedToScreen(true)
@@ -270,39 +285,65 @@ local function buildMain()
   f.lo:SetText(tostring(opts.lo))
   f.hi:SetText(tostring(opts.hi))
 
-  f.class = makeButton(f, "", 130)
-  f.class:SetPoint("LEFT", f.hi, "RIGHT", 12, 0)
-  f.class:RegisterForClicks("AnyUp")
-  f.class:SetScript("OnClick", function(_, button)
-    local at = 0
-    for i, token in ipairs(ns.CLASSES) do if token == searchClass then at = i end end
-    at = (at + (button == "RightButton" and -1 or 1)) % (#ns.CLASSES + 1)
-    searchClass = ns.CLASSES[at]
-    UI.Refresh()
-  end)
-  f.zone = makeButton(f, "", 130)
-  f.zone:SetPoint("LEFT", f.class, "RIGHT", 6, 0)
+  local function levelsChanged(self, userInput)
+    if not userInput then return end
+    local lo, hi = tonumber(f.lo:GetText()), tonumber(f.hi:GetText())
+    if lo and hi and lo >= 1 and hi >= lo then
+      ns.SetLevels(lo, hi)
+      UI.Refresh()
+    end
+  end
+  f.lo:SetScript("OnTextChanged", levelsChanged)
+  f.hi:SetScript("OnTextChanged", levelsChanged)
+
+  f.zone = makeButton(f, "", 120)
+  f.zone:SetPoint("LEFT", f.hi, "RIGHT", 12, 0)
   f.zone:SetScript("OnClick", function() zoneOnly = not zoneOnly; UI.Refresh() end)
-  f.search = makeButton(f, "Search", 150)
-  f.search:SetPoint("LEFT", f.zone, "RIGHT", 6, 0)
+  f.latin = makeButton(f, "", 120)
+  f.latin:SetPoint("LEFT", f.zone, "RIGHT", 6, 0)
+  f.latin:SetScript("OnClick", function() opts.latin = not opts.latin; UI.Refresh() end)
+  f.latin:SetScript("OnEnter", function(self)
+    showTooltip(self, "Names",
+      "Latin names: hides players whose name is written in another alphabet, such as Cyrillic or Korean.",
+      "It is a rough hint for a guild that plays in one language. It cannot tell English from Portuguese.")
+  end)
+  f.latin:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  f.search = makeButton(f, "Search", 170)
+  f.search:SetPoint("LEFT", f.latin, "RIGHT", 6, 0)
   f.search:SetScript("OnClick", startSearch)
   f.search:SetScript("OnEnter", function(self)
     showTooltip(self, "Search",
-      "Asks the game who is online in that level range and keeps the players with no guild.",
-      "One search returns at most 50 players. A busy range is split into smaller searches, and each one needs its own press.")
+      "Asks the game who is online in that level range, for the classes you picked, and keeps the players with no guild.",
+      "One search returns at most 50 players. A busy range is split by level, then class, then race, and each search needs its own press.",
+      "You can bind a key to this under Options, Keybindings, AddOns.")
   end)
   f.search:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
+  -- class row: nothing picked means every class
+  local classLabel = makeLabel(f, "GameFontNormalSmall", "Class")
+  classLabel:SetPoint("TOPLEFT", 16, -91)
+  f.classes = {}
+  for i, token in ipairs(ns.CLASSES) do
+    local b = makeButton(f, ns.ClassName(token), 64, 20)
+    b:SetPoint("TOPLEFT", 52 + (i - 1) * 66, -86)
+    b:SetScript("OnClick", function() ns.ToggleClass(token) end)
+    b.token = token
+    f.classes[i] = b
+  end
+  f.allClasses = makeButton(f, "All", 34, 20)
+  f.allClasses:SetPoint("TOPLEFT", 52 + #ns.CLASSES * 66, -86)
+  f.allClasses:SetScript("OnClick", function() ns.ToggleClass(nil) end)
+
   f.note = makeLabel(f, "GameFontHighlightSmall")
-  f.note:SetPoint("TOPLEFT", 16, -90)
-  f.note:SetPoint("TOPRIGHT", -16, -90)
+  f.note:SetPoint("TOPLEFT", 16, -114)
+  f.note:SetPoint("TOPRIGHT", -16, -114)
   f.note:SetJustifyH("LEFT")
   f.note:SetWordWrap(false)
 
   f.tabs = {}
   for i, label in ipairs({ "Prospects", "Contacted", "Message" }) do
     local b = makeButton(f, label, 120)
-    b:SetPoint("TOPLEFT", 14 + (i - 1) * 124, -108)
+    b:SetPoint("TOPLEFT", 14 + (i - 1) * 124, -132)
     b:SetScript("OnClick", function()
       currentTab, offset = i, 0
       UI.Refresh()
@@ -311,8 +352,8 @@ local function buildMain()
   end
 
   local list = CreateFrame("Frame", nil, f)
-  list:SetPoint("TOPLEFT", 16, -138)
-  list:SetPoint("TOPRIGHT", -16, -138)
+  list:SetPoint("TOPLEFT", 16, -162)
+  list:SetPoint("TOPRIGHT", -16, -162)
   list:SetHeight((ROWS + 1) * ROW_HEIGHT + 4)
   list:EnableMouseWheel(true)
   list:SetScript("OnMouseWheel", function(_, delta)
@@ -321,11 +362,17 @@ local function buildMain()
   end)
   f.list = list
   local x = 0
-  for _, col in ipairs(COLS) do
-    local head = makeLabel(list, "GameFontNormalSmall", col[1])
-    head:SetPoint("TOPLEFT", x, -3)
-    head:SetWidth(col[2])
-    head:SetJustifyH(col[3])
+  f.heads = {}
+  for i, col in ipairs(COLS) do
+    -- a column title is a button: press it to sort by that column, press again to reverse
+    local head = CreateFrame("Button", nil, list)
+    head:SetPoint("TOPLEFT", x, 0)
+    head:SetSize(col[2], ROW_HEIGHT - 2)
+    head.label = makeLabel(head, "GameFontNormalSmall", col[1])
+    head.label:SetAllPoints()
+    head.label:SetJustifyH(col[3])
+    head:SetScript("OnClick", function() offset = 0; ns.SetSort(col[4]) end)
+    f.heads[i] = head
     x = x + col[2] + 8
   end
   f.rows = {}
@@ -352,7 +399,8 @@ local function buildMain()
     showTooltip(self, "What the Next button does",
       "Whisper: sends your message and waits for an answer. This is the polite default.",
       "Invite: sends a guild invite with no message.",
-      "Every press is one whisper or one invite to one player. Nothing is sent on its own.")
+      "Every press is one whisper or one invite to one player. Nothing is sent on its own.",
+      "You can bind a key to Next under Options, Keybindings, AddOns.")
   end)
   f.mode:SetScript("OnLeave", function() GameTooltip:Hide() end)
   local hint = makeLabel(f, "GameFontDisableSmall", "/torchcall help")
@@ -373,20 +421,40 @@ function UI.RefreshMessage()
   local over = #rendered > 255
   panel.count:SetText(("%s%d of 255 characters with %s's name in it%s|r"):format(over and "|cffff4040" or GREY,
     #rendered, sample.name, over and ". Too long, the game will not send it." or ""))
+  local t = ns.TemplateStat(ns.TemplateKey(template))
+  if t.sent > 0 then
+    panel.results:SetText(("%sThis message:|r sent %d, answered %d (%d%%), joined %d"):format(GOLD, t.sent, t.replied,
+      math.floor(t.replied * 100 / t.sent + 0.5), t.joined))
+  else
+    panel.results:SetText(GREY .. "This message has not been sent yet|r")
+  end
   local replyLength = #ns.Render(db.reply, sample)
   panel.replyCount:SetText(("%s%d of 255 characters|r"):format(replyLength > 255 and "|cffff4040" or GREY, replyLength))
+  local welcomeLength = #ns.Render(db.welcome, sample)
+  panel.welcomeCount:SetText(("%s%d of 255 characters|r"):format(welcomeLength > 255 and "|cffff4040" or GREY, welcomeLength))
 end
 
 function UI.Refresh()
   if not main or not main:IsShown() then return end
   local db, c = TorchcallDB, ns.Counts()
-  main.summary:SetText(("%sWaiting|r %s%d|r    %sAnswered|r %s%d|r    %sWhispered|r %s%d|r    %sInvited|r %s%d|r    %sJoined|r %s%d|r    %shour %d/%d, day %d/%d|r")
-    :format(GOLD, WHITE, c.new, GOLD, WHITE, c.replied, GOLD, WHITE, db.stats.whispered, GOLD, WHITE, db.stats.invited,
+  local hiddenNote = c.hidden > 0 and (GREY .. " (+" .. c.hidden .. " filtered out)|r") or ""
+  main.summary:SetText(("%sWaiting|r %s%d|r%s    %sAnswered|r %s%d|r    %sWhispered|r %s%d|r    %sInvited|r %s%d|r    %sJoined|r %s%d|r    %shour %d/%d, day %d/%d|r")
+    :format(GOLD, WHITE, c.new, hiddenNote, GOLD, WHITE, c.replied, GOLD, WHITE, db.stats.whispered, GOLD, WHITE, db.stats.invited,
             GOLD, WHITE, db.stats.joined, GREY, ns.SentThisHour(), opts.hourly, ns.SentToday(), opts.daily))
   main.note:SetText(ns.searchNote or "")
 
-  main.class:SetText(searchClass and ns.ClassName(searchClass) or "Any class")
   main.zone:SetText(zoneOnly and "My zone only" or "Any zone")
+  main.latin:SetText(opts.latin and "Latin names" or "Any names")
+  local picked = ns.PickedClasses()
+  for _, b in ipairs(main.classes) do
+    local on = #picked == 0 or opts.classes[b.token]
+    b:SetText(on and classColored(ns.ClassName(b.token), b.token) or (GREY .. ns.ClassName(b.token) .. "|r"))
+    if #picked > 0 and opts.classes[b.token] then b:LockHighlight() else b:UnlockHighlight() end
+  end
+  for i, head in ipairs(main.heads) do
+    local arrow = COLS[i][4] == opts.sort and (opts.sortUp and " ^" or " v") or ""
+    head.label:SetText(COLS[i][1] .. arrow)
+  end
   local queued = ns.QueueSize()
   if ns.SearchPending() then
     main.search:SetText("Searching...")
@@ -407,9 +475,10 @@ function UI.Refresh()
     main.count:SetText("")
     if not main.message.edit:HasFocus() then main.message.edit:SetText(db.templates[opts.template] or "") end
     if not main.message.reply:HasFocus() then main.message.reply:SetText(db.reply or "") end
+    if not main.message.welcome:HasFocus() then main.message.welcome:SetText(db.welcome or "") end
     UI.RefreshMessage()
   else
-    local rows = ns.List(currentTab == 1 and "new" or "contacted")
+    local rows, hidden = ns.List(currentTab == 1 and "new" or "contacted")
     offset = math.max(0, math.min(offset, math.max(0, #rows - ROWS)))
     for r = 1, ROWS do
       local row, p = main.rows[r], rows[r + offset]
@@ -424,9 +493,14 @@ function UI.Refresh()
         local status = STATUS_LABEL[p.status] or p.status
         if answered then status = ORANGE .. "ANSWERED|r" end
         row.cells[5]:SetText(status .. GREY .. " " .. ago(p.status == "new" and p.seen or p.t) .. "|r")
-        row.whisper:SetText(row.followup and "Link" or "Whisper")
-        -- the follow-up goes once, and only to someone who wrote back
-        if p.status == "new" or (answered and not p.linked) then row.whisper:Show() else row.whisper:Hide() end
+        row.welcome = p.status == "joined"
+        row.whisper:SetText(row.welcome and "Welcome" or (row.followup and "Link" or "Whisper"))
+        -- the follow-up goes once, and only to someone who wrote back; so does the welcome
+        if p.status == "new" or (answered and not p.linked) or (row.welcome and not p.welcomed and canInvite) then
+          row.whisper:Show()
+        else
+          row.whisper:Hide()
+        end
         if canInvite and (p.status == "new" or p.status == "whispered") then row.invite:Show() else row.invite:Hide() end
         if p.status == "new" or p.status == "whispered" then row.skip:Show() else row.skip:Hide() end
         row:Show()
@@ -436,7 +510,13 @@ function UI.Refresh()
       end
     end
     if #rows == 0 then
-      main.empty:SetText(currentTab == 1 and "Nobody waiting. Run a search." or "Nobody contacted yet.")
+      if currentTab ~= 1 then
+        main.empty:SetText("Nobody contacted yet.")
+      elseif hidden > 0 then
+        main.empty:SetText(("Nobody matches your level and class filters. %d waiting are hidden by them."):format(hidden))
+      else
+        main.empty:SetText("Nobody waiting. Run a search.")
+      end
     else
       main.empty:SetText("")
     end
@@ -552,6 +632,7 @@ local function printHelp()
   print("  /torchcall                 open or close the window")
   print("  /torchcall search 10-20    search a level range for players with no guild")
   print("  /torchcall search          send the next queued search")
+  print("  /torchcall class mage priest     only these classes (class all to clear)    /torchcall level 20-40")
   print("  /torchcall next            whisper or invite the next player on the list")
   print("  /torchcall stats           your totals")
   print("  /torchcall skip <name>     never contact this player    /torchcall forget <name>   drop them from the list")
@@ -573,6 +654,7 @@ local function slash(input)
     if not lo then lo = rest:match("^(%d+)$"); hi = lo end
     if lo then
       ns.StartSearch(lo, hi)
+      if main then main.lo:SetText(tostring(opts.lo)); main.hi:SetText(tostring(opts.hi)) end
     elseif ns.QueueSize() > 0 then
       ns.NextSearch()
     else
@@ -586,6 +668,35 @@ local function slash(input)
     local c, s = ns.Counts(), db.stats
     ns.Print(("%d waiting, %d answered. All time: %d found, %d whispered, %d invited, %d joined, %d declined.")
       :format(c.new, c.replied, s.found, s.whispered, s.invited, s.joined, s.declined))
+  elseif cmd == "class" or cmd == "classes" then
+    if rest == "" or rest:lower() == "all" or rest:lower() == "any" then
+      ns.ToggleClass(nil)
+    else
+      for k in pairs(opts.classes) do opts.classes[k] = nil end
+      for word in rest:gmatch("%a+") do
+        for _, token in ipairs(ns.CLASSES) do
+          if token:lower():find(word:lower(), 1, true) == 1 or ns.ClassName(token):lower():find(word:lower(), 1, true) == 1 then
+            opts.classes[token] = true
+          end
+        end
+      end
+    end
+    local names = {}
+    for _, token in ipairs(ns.PickedClasses()) do names[#names + 1] = ns.ClassName(token) end
+    ns.Print("Classes: " .. (#names > 0 and table.concat(names, ", ") or "all of them") .. ".")
+    UI.Refresh()
+  elseif cmd == "level" or cmd == "levels" then
+    local lo, hi = rest:match("^(%d+)%s*%-%s*(%d+)$")
+    if not lo then lo = rest:match("^(%d+)$"); hi = lo end
+    if lo then
+      ns.SetLevels(lo, hi)
+      if main then main.lo:SetText(tostring(opts.lo)); main.hi:SetText(tostring(opts.hi)) end
+      UI.Refresh()
+    end
+    ns.Print(("Levels %d to %d."):format(opts.lo, opts.hi))
+  elseif cmd == "welcome" then
+    local p = ns.FindProspect(rest)
+    if p then act(ns.Welcome, p.name) else ns.Print("Nobody called '" .. rest .. "' is on the list.") end
   elseif cmd == "skip" or cmd == "forget" then
     local p = ns.FindProspect(rest)
     if not p then
@@ -594,8 +705,8 @@ local function slash(input)
       ns.Skip(p.name)
       ns.Print(p.name .. " will not be contacted.")
     else
-      ns.Forget(p.name)
-      ns.Print(p.name .. " is off the list.")
+      local ok, why = ns.Forget(p.name)
+      ns.Print(ok and (p.name .. " is off the list.") or why)
     end
   elseif cmd == "cap" then
     local n = tonumber(rest)
@@ -624,6 +735,26 @@ local function slash(input)
   else
     printHelp()
   end
+end
+
+-- Key bindings (Options, Keybindings, AddOns). A key press is one action, same as a click.
+BINDING_HEADER_TORCHCALL = "Torchcall"
+BINDING_NAME_TORCHCALL_NEXT = "Whisper or invite the next player"
+BINDING_NAME_TORCHCALL_SEARCH = "Send the next who search"
+BINDING_NAME_TORCHCALL_TOGGLE = "Open or close the window"
+
+function Torchcall_KeyNext()
+  if not (TorchcallDB and opts) then return end
+  local target = ns.NextTarget()
+  if act(ns.Next) and target and not (main and main:IsShown()) then
+    ns.Print((opts.mode == "invite" and "Invited " or "Whispered ") .. target.name .. ".")
+  end
+end
+
+function Torchcall_KeySearch()
+  if not (TorchcallDB and opts) then return end
+  startSearch()
+  if not (main and main:IsShown()) then ns.Print(ns.searchNote) end
 end
 
 function UI.Init()

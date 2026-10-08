@@ -17,6 +17,9 @@ ns.TEMPLATES = {
 -- Sent with the Link button to someone who answered.
 ns.REPLY = "Welcome aboard. Our Discord has class guides, a craft request board and voice chat: discord.gg/passthetorch  Type !torch in there and the guild channels open up."
 
+-- Said in guild chat by the Welcome button when someone you recruited joins.
+ns.WELCOME = "Welcome to <{guild}>, {name}! Glad you are here. Ask anything, somebody always knows."
+
 -- The nine Forever classes, in the order the class button cycles through them.
 ns.CLASSES = { "WARRIOR", "PALADIN", "HUNTER", "ROGUE", "PRIEST", "SHAMAN", "MAGE", "WARLOCK", "DRUID" }
 ns.CLASS_NAMES = { WARRIOR = "Warrior", PALADIN = "Paladin", HUNTER = "Hunter", ROGUE = "Rogue", PRIEST = "Priest",
