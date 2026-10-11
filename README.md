@@ -25,7 +25,7 @@ It finds players with no guild, opens with one short question, helps you answer 
 
 ## What it will not do
 
-There is no "invite all", no "send to everyone", no hands-free mode that turns your normal clicks into invites, and no timer. Those are the features that get recruiters reported. One press reaches one player, and the limits above cannot be switched off.
+There is no "invite all", no "send to everyone", no hands-free mode that turns your normal clicks into invites, and no timer. Those are the features that get recruiters reported. One press reaches one player. The hourly limit and the gap between whispers cannot be switched off; the daily limit is yours to set.
 
 ## Install
 
