@@ -84,7 +84,7 @@ end
 
 local function hello()
   -- the guild name is not known for the first moments after login
-  if not ns.MyGuild() or not send(table.concat({ "H", PROTO, token }, ";")) then
+  if not ns.MyGuild() or not send(table.concat({ "H", PROTO, token, ns.VERSION }, ";")) then
     helloTries = helloTries + 1
     if helloTries < 6 and plain(try(IsInGuild)) then C_Timer.After(15, hello) end
   end
@@ -102,6 +102,23 @@ local function markTaken(name, by)
   return true
 end
 
+local RELEASES = "github.com/studyalwaysbro/torchcall/releases"
+-- A guildmate running a newer version means there is one to get. Said once per session.
+local function versionNumber(v)
+  local a, b, c = tostring(v):match("^(%d+)%.(%d+)%.?(%d*)")
+  if not a then return nil end
+  return tonumber(a) * 1000000 + tonumber(b) * 1000 + (tonumber(c) or 0)
+end
+local toldNewer = false
+local function noteVersion(theirs)
+  if toldNewer or type(theirs) ~= "string" or #theirs > 12 then return end
+  local mine, other = versionNumber(ns.VERSION), versionNumber(theirs)
+  if not (mine and other) or other <= mine then return end
+  toldNewer = true
+  ns.Print(("version %s is out and you have %s. With Yeeterson Forge it arrives by itself. Otherwise download it from %s"):format(theirs, ns.VERSION, RELEASES))
+end
+Comm.NoteVersion = noteVersion
+
 function Comm.handlers.CHAT_MSG_ADDON(prefix, text, channel, sender)
   prefix, text, channel, sender = plain(prefix), plain(text), plain(channel), plain(sender)
   if prefix ~= PREFIX or channel ~= "GUILD" then return end
@@ -110,6 +127,7 @@ function Comm.handlers.CHAT_MSG_ADDON(prefix, text, channel, sender)
   if tonumber(proto) ~= PROTO or tag == token then return end
   local by = sender:gsub("|", ""):sub(1, 48)
   if kind == "H" then
+    noteVersion(body) -- a hello carries the sender's version since 1.2.2
     if GetTime() - lastReply > 30 then
       lastReply = GetTime()
       C_Timer.After(1 + math.random() * 5, shareRecent) -- spread replies out

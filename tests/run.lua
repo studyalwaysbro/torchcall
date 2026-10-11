@@ -992,6 +992,18 @@ check(not ok, "no guild, no write")
 M.inGuild = true
 check(not ns.SetGuildText("bogus"), "an unknown text is refused")
 
+-- a guildmate on a newer version: one line, once
+M.printed, M.sentAddon = {}, {}
+M.fire("CHAT_MSG_ADDON", "Torchcall", "H;1;aaaaaa", "GUILD", "Old Officer")
+M.fire("CHAT_MSG_ADDON", "Torchcall", "H;1;bbbbbb;" .. ns.VERSION, "GUILD", "Same Officer")
+M.fire("CHAT_MSG_ADDON", "Torchcall", "H;1;cccccc;junk;more", "GUILD", "Junk Officer")
+check(not table.concat(M.printed, "\n"):find("is out", 1, true), "a hello with no version, the same version or junk says nothing")
+M.fire("CHAT_MSG_ADDON", "Torchcall", "H;1;dddddd;9.4.2", "GUILD", "New Officer")
+M.fire("CHAT_MSG_ADDON", "Torchcall", "H;1;eeeeee;9.9.9", "GUILD", "Newest Officer")
+local told = 0
+for _, line in ipairs(M.printed) do if line:find("version 9.4.2 is out and you have " .. ns.VERSION, 1, true) then told = told + 1 end if line:find("9.9.9", 1, true) then told = told + 10 end end
+eq(told, 1, "a newer version is announced once per session")
+
 -- an upgrade from 1.1 saved data gets every new field without losing anything
 M.reset(false)
 TorchcallDB = { prospects = { ["Old Timer"] = { name = "Old Timer", status = "joined", t = time() - 86400 } }, stats = { joined = 9, invited = 37, whispered = 21, replied = 1, declined = 23, found = 64 },
@@ -1017,5 +1029,14 @@ check(ns.Funnel().advice:find("Only 5%% of whispers"), "his real numbers produce
 M.advance(25)
 check(not table.concat(M.printed, "\n"):find("due", 1, true) or true, "login reminder runs without error")
 
+-- the version the addon reports is the version on the box
+do
+  local f = assert(io.open("Torchcall/Torchcall.toc"))
+  local toc = f:read("*a") f:close()
+  local probe = {}
+  assert(loadfile("Torchcall/Data.lua"))("Torchcall", probe)
+  assert(loadfile("Torchcall/Core.lua"))("Torchcall", probe)
+  eq(toc:match("## Version: ([%d%.]+)"), probe.VERSION, "the toc and the code agree on the version")
+end
 M.realPrint(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)

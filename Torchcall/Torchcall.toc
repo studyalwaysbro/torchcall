@@ -2,7 +2,7 @@
 ## Title: Torchcall
 ## Notes: Guild recruiting done one person at a time. Finds players with no guild, opens with a short question, answers what they ask about the guild, and tracks who joined and who stayed. Type /torchcall.
 ## Author: The True Torchmen
-## Version: 1.2.1
+## Version: 1.2.2
 ## SavedVariables: TorchcallDB
 ## IconTexture: Interface\Icons\INV_Torch_Lit
 ## AddonCompartmentFunc: Torchcall_OnCompartmentClick
