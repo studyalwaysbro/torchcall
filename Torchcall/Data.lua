@@ -26,6 +26,12 @@ ns.TEMPLATES = {
 -- Playing together first is the best reason anyone has to say yes.
 ns.GROUP_TEMPLATE = "Good run, {name}. If you want a guild, <{guild}> is a group of friends who level and run dungeons together. Want an invite?"
 
+-- Used in place of an opener for a class the guild is short of (/torchcall need).
+ns.NEED_TEMPLATE = "Hey {name}, <{guild}> is short a {class} for dungeons right now. Friends first, no application. Want to run with us?"
+
+-- The Discord, on its own, for the check-in to someone who has not joined it yet.
+ns.DISCORD = "discord.gg/passthetorch"
+
 -- What 1.1 shipped with. A saved message that is still exactly one of these was never edited,
 -- so it is swapped for the current one in the same place. Anything you rewrote is left alone.
 ns.OLD_TEMPLATES = {

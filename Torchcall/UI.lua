@@ -683,8 +683,16 @@ function UI.Refresh()
     head.label:SetText(COLS[i][1] .. arrow)
   end
   local queued = ns.QueueSize()
+  local wait = ns.SearchWait()
   if ns.SearchPending() then
     main.search:SetText("Searching...")
+  elseif wait > 0 and queued > 0 then
+    -- the game takes one who search every few seconds: count it down on the button
+    main.search:SetText(("Next search in %d"):format(wait))
+    if not main.counting then
+      main.counting = true
+      C_Timer.After(1, function() main.counting = false UI.Refresh() end)
+    end
   elseif queued > 0 and select(4, searchInputs()) == planKey then
     main.search:SetText(("Next search (%d left)"):format(queued))
   else
@@ -729,6 +737,7 @@ function UI.Refresh()
         row.cells[4]:SetText(p.zone or "")
         local status = STATUS_LABEL[p.status] or p.status
         if answered then status = ORANGE .. "ANSWERED|r" end
+        if p.status == "new" and ns.Needed(p) then status = GOLD .. "class we need|r" end
         if p.status == "new" and p.ran then status = GREEN .. "played with|r" end
         if p.stayed == false then status = GREY .. "joined, then left|r" end
         row.cells[5]:SetText(status .. GREY .. " " .. ago(p.status == "new" and p.seen or p.t) .. "|r")
@@ -889,6 +898,9 @@ local function printHelp()
   print("  /torchcall skip <name>     never contact this player    /torchcall forget <name>   drop them from the list")
   print("  /torchcall cap <number>    new people you may contact per hour (now " .. opts.hourly .. ")")
   print("  /torchcall cap day <number|off>   and per day (now " .. (opts.daily > 0 and opts.daily or "no limit") .. ")")
+  print("  /torchcall need <classes>  classes the guild is short of (healers, tanks, priest mage, off): they come first")
+  print("  /torchcall warm            who answered and is still waiting    /torchcall board   recruiters this week")
+  print("  /torchcall recruits        your recruits and their first week   /torchcall step <name> discord")
   print("  /torchcall clear           empty the waiting list    /torchcall minimap   show or hide the button")
   print("  /torchcall log             last debug lines")
 end
@@ -930,6 +942,63 @@ local function slash(input)
     line("Invites after a conversation", f.warm)
     line("Invites with no conversation", f.cold)
     print("  " .. f.advice)
+    local insights = ns.Insights()
+    if #insights > 0 then
+      print("  Where it works best so far:")
+      for _, text in ipairs(insights) do print("    " .. text) end
+    end
+  elseif cmd == "need" then
+    if rest ~= "" then
+      local unknown = ns.SetNeed(rest)
+      if #unknown > 0 then ns.Print("Not a class I know: " .. table.concat(unknown, ", ") .. ". Try class names, healers or tanks.") end
+    end
+    local list = ns.NeedList()
+    if #list == 0 then
+      ns.Print("No class is marked as needed. /torchcall need healers, /torchcall need priest mage, /torchcall need off.")
+    else
+      local names = {}
+      for i, token in ipairs(list) do names[i] = ns.ClassName(token) end
+      ns.Print("The guild needs: " .. table.concat(names, ", ") .. ". They come first on the list and get the opener written for it (Message tab words are kept for everyone else).")
+    end
+    UI.Refresh()
+  elseif cmd == "board" then
+    ns.Print("Recruiters, this week first:")
+    for i, row in ipairs(ns.Board()) do
+      print(("  %d. %s%s|r  %d this week, %d all time, %d still here after a week"):format(i, row.me and GOLD or WHITE, row.name, row.week, row.joined, row.stayed))
+    end
+    print("  Other recruiters show up here once they are online with Torchcall 1.4 or newer.")
+  elseif cmd == "recruits" then
+    local list = ns.Recruits()
+    if #list == 0 then
+      ns.Print("Nobody you recruited has joined in the last three weeks.")
+    else
+      ns.Print("Your recruits, newest first:")
+      for _, p in ipairs(list) do
+        local parts = {}
+        for _, step in ipairs(ns.STEPS) do
+          parts[#parts + 1] = ((p.steps and p.steps[step[1]]) and GREEN .. "yes|r " or GREY .. "not yet|r ") .. step[2]
+        end
+        print(("  %s, joined %s: %s"):format(p.name, ago(p.t), table.concat(parts, ", ")))
+      end
+      print("  Tick one yourself: /torchcall step <name> discord   (hello and run are noticed by the addon)")
+    end
+  elseif cmd == "step" then
+    local name, key = rest:match("^(.-)%s+(%a+)$")
+    local ok, result = false, "Like this: /torchcall step <name> discord"
+    if name and name ~= "" then ok, result = ns.Step(name, key:lower()) end
+    if ok then
+      ns.Print(("%s: %s is now %s."):format(result.name, key:lower(), result.steps[key:lower()] and "ticked" or "unticked"))
+    else
+      ns.Print(result)
+    end
+  elseif cmd == "warm" then
+    local list = ns.FollowUps()
+    if #list == 0 then
+      ns.Print("Nobody is waiting on an answer from you.")
+    else
+      ns.Print("Answered you and still waiting, longest first:")
+      for _, p in ipairs(list) do print(("  %s (%s): %s"):format(p.name, ago(p.replied), p.said or "")) end
+    end
   elseif cmd == "group" then
     act(ns.AddGroup)
   elseif cmd == "guild" then

@@ -1,5 +1,5 @@
 -- Minimal stand-in for the WoW client API, enough to load and drive Torchcall offline.
-local M = { now = 1000, wall = 1791400000, timers = {}, sentAddon = {}, sentChat = {}, sentWho = {}, invited = {},
+local M = { now = 1000, wall = 1791400000, timers = {}, sentAddon = {}, sentChat = {}, sentWho = {}, sentFilters = {}, invited = {},
             printed = {}, frames = {}, lockdown = false, inGuild = true, canInvite = true, myGuild = "The True Torchmen",
             myName = "Vesh Torchman", who = {}, races = { { name = "Orc", ID = 2 }, { name = "Troll", ID = 8 }, { name = "Tauren", ID = 6 }, { name = "Undead", ID = 5 } }, whoTotal = nil, whoToUi = false, addonResult = 0, zone = "Durotar" }
 
@@ -34,6 +34,11 @@ function Ambiguate(n) return (n:gsub("%-.*$", "")) end
 UNKNOWNOBJECT = "Unknown"
 RAID_CLASS_COLORS = { WARRIOR = { r = 0.78, g = 0.61, b = 0.43 }, MAGE = { r = 0.25, g = 0.78, b = 0.92 } }
 SOUNDKIT = { TELL_MESSAGE = 3081 }
+M.playedFiles, M.notices = {}, {}
+function PlaySoundFile(path, channel) assert(type(path) == "string" and channel == "Master", "PlaySoundFile(path, \"Master\")") M.playedFiles[#M.playedFiles + 1] = path return true, 1 end
+RaidWarningFrame = {}
+ChatTypeInfo = { RAID_WARNING = { r = 1, g = 0.3, b = 0 } }
+function RaidNotice_AddMessage(frame, text, color) assert(frame == RaidWarningFrame and type(text) == "string" and type(color) == "table", "RaidNotice_AddMessage(frame, text, color)") M.notices[#M.notices + 1] = text end
 function PlaySound(id, extra) assert(type(id) == "number" and extra == nil, "PlaySound takes the sound id only") end
 UISpecialFrames = {}
 SlashCmdList = {}
@@ -130,10 +135,15 @@ end
 function C_GuildInfo.GuildRoster() M.rosterAsked = (M.rosterAsked or 0) + 1 end
 local function freshFriendList() return {
   SetWhoToUi = function(on) M.whoToUi = on end,
-  SendWho = function(text, origin)
+  SendWho = function(text, origin, filters)
     if M.whoError then error("blocked") end
+    if filters ~= nil then
+      assert(type(filters) == "table" and type(filters.classIDs) == "table" and type(filters.raceIDs) == "table" and type(filters.uiMapIDs) == "table", "who filters need classIDs, raceIDs and uiMapIDs")
+      for _, id in ipairs(filters.classIDs) do assert(type(id) == "number", "class IDs are numbers") end
+    end
     if M.guard and text ~= "someone else's search" then M.guard("who", text) end
     M.sentWho[#M.sentWho + 1] = text
+    M.sentFilters[#M.sentWho] = filters or false
   end,
   GetNumWhoResults = function() return math.min(#M.who, 50), M.whoTotal or #M.who end,
   GetWhoInfo = function(i) return M.who[i] end,
@@ -202,10 +212,14 @@ UIParent = M.newFrame("Frame", "UIParent")
 Minimap = M.newFrame("Frame", "Minimap")
 GameTooltip = M.newFrame("GameTooltip", "GameTooltip")
 
+-- Tests written before the game's own class filter was used ask for classes in the search
+-- words. M.whoMode = nil leaves the addon on its real default.
+M.whoMode = "text"
 function M.fire(event, ...)
   for _, f in ipairs(M.frames) do
     if f.__events[event] and f.__scripts.OnEvent then f.__scripts.OnEvent(f, event, ...) end
   end
+  if event == "ADDON_LOADED" and M.whoMode and TorchcallDB and TorchcallDB.opts then TorchcallDB.opts.whoMode = M.whoMode end
 end
 
 -- press the first button whose label starts with this text
@@ -228,6 +242,7 @@ function M.reset(wipe)
   for _, f in ipairs(M.frames) do if f.__name then _G[f.__name] = nil end end
   M.frames, M.timers = {}, {}
   M.sentAddon, M.sentChat, M.sentWho, M.invited, M.printed = {}, {}, {}, {}, {}
+  M.sentFilters = {}
   M.lockdown, M.inGuild, M.canInvite, M.addonResult = false, true, true, 0
   M.group, M.raid, M.roster, M.rosterHidden = {}, false, {}, nil
   M.chatError, M.whoError, M.inviteError, M.who, M.whoTotal, M.whoToUi = nil, nil, nil, {}, nil, false

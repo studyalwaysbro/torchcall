@@ -129,7 +129,7 @@ M.guard = function(kind, target, msg)
       rec.checked[target] = time()
       totals.checkins = totals.checkins + 1
     elseif msg:find("discord.gg", 1, true) then
-      if not rec.replied[target] then fail("follow-up to someone who never answered: " .. target) end
+      if not rec.replied[target] then fail("follow-up to someone who never answered: " .. target .. " :: " .. msg) end
       if rec.linked[target] then fail("follow-up sent twice to " .. target) end
       rec.linked[target] = true
       totals.followups = totals.followups + 1
@@ -196,6 +196,7 @@ end
 local function login(wipe)
   M.reset(wipe)
   if wipe then freshRecords(); world = {}; totals.wipes = totals.wipes + 1 end
+  M.whoMode = pick({ "text", "text", "exclude", "include", "local", false }) or nil -- every way a search can ask for classes
   ns = M.load(os.getenv("TORCHCALL_DIR") or "Torchcall", FILES)
   M.fire("ADDON_LOADED", "Torchcall")
   M.fire("PLAYER_LOGIN")
@@ -229,7 +230,7 @@ local function answer()
   M.fire("WHO_LIST_UPDATE")
 end
 
-local SLASH = { "", "help", "stats", "search", "search 1-60", "search 10-20", "search 60", "next", "cap 5", "cap 30", "cap 60", "cap 9999", "cap day 5", "cap day off", "cap day 100", "cap day x", "cap day 99999",
+local SLASH = { "", "help", "stats", "search", "search 1-60", "search 10-20", "search 60", "next", "cap 5", "cap 30", "cap 60", "cap 9999", "cap day 5", "cap day off", "cap day 100", "cap day x", "cap day 99999", "need healers", "need tanks mage", "need off", "need", "need wizards", "board", "recruits", "warm", "step", "step Nobody discord",
                 "class mage", "class all", "class warrior priest rogue", "level 1-60", "level 20-40", "level 60-1", "clear", "minimap", "log",
                 "skip", "forget", "welcome", "bogus", "group", "rotate", "answer", "answer raids", "answer bogus", "answer discord", "checkin", "guild", "guild info", "guild motd", "guild zz" }
 
@@ -281,6 +282,11 @@ local STEP = {
   function() db.opts.latin = chance(0.3) end,
   function() db.opts.daily = pick({ 3, 8, 100, 100, 0 }) end,
   function() db.opts.mode = pick({ "whisper", "whisper", "invite" }) end,
+  function() M.fire("CHAT_MSG_GUILD", chance(0.1) and M.secret() or "hi", chance(0.1) and M.secret() or knownName("joined")) end,
+  function() M.fire("GROUP_ROSTER_UPDATE") end,
+  function() if chance(0.5) then press(ns.Step, knownName("joined"), pick({ "discord", "hello", "run", "junk" })) end end,
+  function() M.fire("CHAT_MSG_ADDON", "Torchcall", "S;1;zz" .. R(99) .. ";" .. pick({ "3,1,1", "0,0,0", "9,99,1", "x", "", "5,5,5,5" }), "GUILD", "Board " .. R(80)) end,
+  function() ns.Insights() ns.Board() ns.Recruits() ns.FollowUps() ns.MyScore() end,
   function() db.opts.template = R(1, #db.templates) end,
   function() ns.SetSort(pick({ "name", "level", "class", "zone", "seen", "junk" })) end,
   function() -- someone writes back

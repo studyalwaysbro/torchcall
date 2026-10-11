@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.3.0"
+ns.VERSION = "1.4.0"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -125,6 +125,17 @@ local function initDB()
   if type(o.classes) ~= "table" then o.classes = {} end -- class token = true; empty means every class
   if o.latin == nil then o.latin = false end            -- only names in the Latin alphabet
   o.sort = o.sort or "seen"
+  -- how a search asks for classes: "exclude" and "include" use the game's own class filter
+  -- (which of the two it means is learned from the first answer), "text" writes the class
+  -- into the search words, "local" filters here. See onWhoResults.
+  if o.whoMode ~= "include" and o.whoMode ~= "text" and o.whoMode ~= "local" then o.whoMode = "exclude" end
+  if type(o.need) ~= "table" then o.need = {} end -- classes the guild is short of: class token = true
+  if type(db.needmsg) ~= "string" then db.needmsg = ns.NEED_TEMPLATE end
+  if type(db.board) ~= "table" then db.board = {} end     -- [recruiter] = { joined, stayed, week, t }
+  if type(db.buckets) ~= "table" then db.buckets = {} end -- [kind][key] = { sent, replied, joined }
+  for _, kind in ipairs({ "level", "class", "hour" }) do
+    if type(db.buckets[kind]) ~= "table" then db.buckets[kind] = {} end
+  end
   if o.sortUp == nil then o.sortUp = false end
 end
 
@@ -305,6 +316,44 @@ local function matches(p)
 end
 ns.Matches = matches
 
+-- Classes the guild is short of. Those players come first on the waiting list and get the
+-- opener written for it. Words a recruiter would type are understood too.
+local NEED_WORDS = {
+  healer = { "PRIEST", "SHAMAN", "DRUID", "PALADIN" }, healers = { "PRIEST", "SHAMAN", "DRUID", "PALADIN" },
+  tank = { "WARRIOR", "DRUID", "PALADIN" }, tanks = { "WARRIOR", "DRUID", "PALADIN" },
+}
+function ns.SetNeed(text)
+  local need = TorchcallDB.opts.need
+  for k in pairs(need) do need[k] = nil end
+  local unknown = {}
+  for word in tostring(text or ""):lower():gmatch("%a+") do
+    if word ~= "off" and word ~= "none" and word ~= "and" then
+      local found = NEED_WORDS[word]
+      if not found then
+        for token, label in pairs(ns.CLASS_NAMES) do
+          if label:lower() == word or label:lower() .. "s" == word then found = { token } end
+        end
+      end
+      if found then for _, token in ipairs(found) do need[token] = true end else unknown[#unknown + 1] = word end
+    end
+  end
+  changed()
+  return unknown
+end
+
+function ns.NeedList()
+  local list = {}
+  for _, token in ipairs(ns.CLASSES) do
+    if TorchcallDB.opts.need[token] then list[#list + 1] = token end
+  end
+  return list
+end
+
+local function needed(p)
+  return p.class ~= nil and TorchcallDB.opts.need[p.class] == true
+end
+ns.Needed = needed
+
 local SORTS = {
   name = function(p) return p.name end,
   level = function(p) return p.level or 0 end,
@@ -342,6 +391,7 @@ function ns.List(kind)
   table.sort(rows, function(a, b)
     if kind == "new" and answered(a) ~= answered(b) then return answered(a) end
     if kind == "new" and (a.ran and true or false) ~= (b.ran and true or false) then return a.ran and true or false end
+    if kind == "new" and needed(a) ~= needed(b) then return needed(a) end
     local x, y = key(a), key(b)
     if x ~= y then
       if up then return x < y end
@@ -407,6 +457,40 @@ local function className(token)
 end
 ns.ClassName = className
 
+-- The game's who search takes a class filter of its own, beside the words. Several classes
+-- fit in one search that way, and the fifty players it returns are all of those classes.
+local CLASS_IDS = { WARRIOR = 1, PALADIN = 2, HUNTER = 3, ROGUE = 4, PRIEST = 5, SHAMAN = 7, MAGE = 8, WARLOCK = 9, DRUID = 11 }
+local function whoMode() return TorchcallDB.opts.whoMode end
+
+-- The classes a search is for, as a set, or nil for every class.
+local function wantedClasses(q)
+  if q.classes then
+    local set = {}
+    for _, token in ipairs(q.classes) do set[token] = true end
+    return set
+  end
+  if q.class then return { [q.class] = true } end
+end
+
+local function classKey(q)
+  if q.classes then return table.concat(q.classes, ",") end
+  return q.class or ""
+end
+
+-- The filter table for a search, or nil when the search has no classes or this client is
+-- being asked in words instead.
+local function whoFilters(q)
+  local mode, want = whoMode(), wantedClasses(q)
+  if not want or (mode ~= "exclude" and mode ~= "include") then return nil end
+  local ids = {}
+  for _, token in ipairs(ns.CLASSES) do
+    -- the game's own who window sends the classes that are unticked; "include" is the other reading
+    if (mode == "exclude") ~= (want[token] == true) and CLASS_IDS[token] then ids[#ids + 1] = CLASS_IDS[token] end
+  end
+  return { classIDs = ids, raceIDs = {}, uiMapIDs = {} }
+end
+ns.WhoFilters = whoFilters
+
 local function queryText(q)
   local text = q.lo .. "-" .. q.hi
   if q.class then text = text .. ' c-"' .. className(q.class) .. '"' end
@@ -432,13 +516,18 @@ end
 local function describe(q)
   local text = (q.lo == q.hi) and ("level " .. q.lo) or ("levels " .. q.lo .. " to " .. q.hi)
   if q.class then text = text .. ", " .. className(q.class) end
+  if q.classes then
+    local names = {}
+    for i, token in ipairs(q.classes) do names[i] = className(token) end
+    text = text .. ", " .. table.concat(names, ", ")
+  end
   if q.race then text = text .. ", " .. q.race end
   if q.zone then text = text .. ", " .. q.zone end
   return text
 end
 
 local function sameQuery(a, b)
-  return a.lo == b.lo and a.hi == b.hi and a.class == b.class and a.race == b.race and a.zone == b.zone
+  return a.lo == b.lo and a.hi == b.hi and classKey(a) == classKey(b) and a.race == b.race and a.zone == b.zone
 end
 
 -- Drop a filter the server ignores from everything still queued, and the repeats that leaves.
@@ -467,6 +556,12 @@ end
 function ns.QueueSize() return #queue end
 function ns.SearchPending() return pending ~= nil end
 
+-- Seconds until the game will take another who search; 0 when one can go now.
+function ns.SearchWait()
+  local wait = math.max(WHO_GAP - (GetTime() - lastWho), WHO_GAP - (time() - (TorchcallDB.lastWho or 0)))
+  return wait > 0 and math.ceil(wait) or 0
+end
+
 -- Sends the next queued search. Only ever reached from a click or a typed command.
 function ns.NextSearch()
   if pending then return false end
@@ -480,9 +575,9 @@ function ns.NextSearch()
     return false
   end
   -- the wall-clock copy keeps the gap across a reload
-  local wait = math.max(WHO_GAP - (GetTime() - lastWho), WHO_GAP - (time() - (TorchcallDB.lastWho or 0)))
+  local wait = ns.SearchWait()
   if wait > 0 then
-    note(("The game limits who searches. Try again in %d seconds."):format(math.ceil(wait)))
+    note(("Ready in %d seconds. The game takes one who search every %d."):format(wait, WHO_GAP))
     return false
   end
   if not (C_FriendList and C_FriendList.SendWho) then
@@ -492,7 +587,10 @@ function ns.NextSearch()
   setWhoToUi(true)
   local origin = Enum and Enum.SocialWhoOrigin and Enum.SocialWhoOrigin.Social
   sendingOurs = true
-  local ok, err = pcall(C_FriendList.SendWho, queryText(q), origin)
+  local filters = whoFilters(q)
+  local ok, err
+  if filters then ok, err = pcall(C_FriendList.SendWho, queryText(q), origin, filters)
+  else ok, err = pcall(C_FriendList.SendWho, queryText(q), origin) end
   sendingOurs = false
   if not ok then
     setWhoToUi(false)
@@ -510,7 +608,7 @@ function ns.NextSearch()
     pending = nil
     setWhoToUi(false)
     table.insert(queue, 1, q)
-    note("No answer from the game. Wait a few seconds and press Search again.")
+    note("The game was slow to answer that one. Press Search again.")
   end)
   return true
 end
@@ -525,13 +623,17 @@ function ns.StartSearch(lo, hi, zone)
   lo, hi = ns.SetLevels(lo, hi)
   zone = (type(zone) == "string" and zone ~= "" and not zone:find('"', 1, true)) and zone or nil
   local classes = pickedClasses()
+  local mode = whoMode()
   queue = {}
-  if #classes == 0 or classFilterBroken then
+  if #classes == 0 or classFilterBroken or mode == "local" then
     queue[1] = { lo = lo, hi = hi, zone = zone }
-  else
+  elseif mode == "text" then
     for _, token in ipairs(classes) do
       queue[#queue + 1] = { lo = lo, hi = hi, class = token, zone = zone }
     end
+  else
+    -- every picked class in one search: the game's own class filter takes them all
+    queue[1] = { lo = lo, hi = hi, classes = classes, zone = zone }
   end
   return ns.NextSearch()
 end
@@ -551,18 +653,43 @@ local function onWhoResults()
     return
   end
   if type(total) ~= "number" then total = shown end
-  local added, wrongClass, wrongRace = 0, 0, 0
+  local added, wrongClass, rightClass, wrongRace = 0, 0, 0, 0
+  local want = wantedClasses(q)
   for i = 1, shown do
     local info = try(C_FriendList.GetWhoInfo, i)
     if type(info) == "table" then
       local class, race = plain(info.filename), plain(info.raceStr)
-      if q.class and type(class) == "string" and class ~= q.class then wrongClass = wrongClass + 1 end
+      if want and type(class) == "string" then
+        if want[class] then rightClass = rightClass + 1 else wrongClass = wrongClass + 1 end
+      end
       if q.race and type(race) == "string" and race ~= q.race then wrongRace = wrongRace + 1 end
     end
     if addFromWho(info) then added = added + 1 end
   end
   TorchcallDB.stats.found = TorchcallDB.stats.found + added
-  local text = ("%s: %d online, %d new without a guild."):format(describe(q), total, added)
+  local capped = total > shown or shown >= WHO_MAX
+  local text
+  if capped then
+    text = ("%s: showing %d of %d online, %d new without a guild."):format(describe(q), shown, math.max(total, shown), added)
+  else
+    text = ("%s: %d online, %d new without a guild."):format(describe(q), total, added)
+  end
+  -- The game's class filter was asked for and the answer held other classes. It was read the
+  -- wrong way round, or this client ignores it: try the other reading, then the search words.
+  -- Whoever came back without a guild is kept either way.
+  if q.classes and wrongClass > 0 then
+    local o = TorchcallDB.opts
+    o.whoMode = (o.whoMode == "exclude") and "include" or "text"
+    ns.Log("who", "class filter not honoured, now asking by " .. o.whoMode)
+    for i = #queue, 1, -1 do if queue[i].classes then table.remove(queue, i) end end
+    if o.whoMode == "include" then
+      table.insert(queue, 1, { lo = q.lo, hi = q.hi, classes = q.classes, zone = q.zone })
+    else
+      for i = #q.classes, 1, -1 do table.insert(queue, 1, { lo = q.lo, hi = q.hi, class = q.classes[i], zone = q.zone }) end
+    end
+    note(text .. (" That answer mixed in other classes, so the next search asks a different way. Press Search again (%d left)."):format(#queue))
+    return
+  end
   -- this answer was really the answer to the same search without that filter: treat it so,
   -- and drop the queued searches that would only repeat it
   local function ignored(field)
@@ -572,8 +699,9 @@ local function onWhoResults()
       if sameQuery(queue[i], q) then table.remove(queue, i) end
     end
   end
-  if wrongClass > 0 and not classFilterBroken then
+  if q.class and wrongClass > 0 and not classFilterBroken then
     classFilterBroken = true
+    TorchcallDB.opts.whoMode = "local"
     ignored("class")
     ns.Log("who", "class filter ignored by the server for " .. queryText(q))
     text = text .. " The game ignored the class part of the search, so classes are filtered here instead."
@@ -583,12 +711,12 @@ local function onWhoResults()
     ignored("race")
     ns.Log("who", "race filter ignored by the server for " .. queryText(q))
   end
-  if total > shown or shown >= WHO_MAX then
-    local picked = pickedClasses()
+  if capped then
+    local picked = q.classes or pickedClasses()
     local races = (not raceFilterBroken and not q.race) and raceNames() or {}
     local function push(extra)
-      local item = { lo = q.lo, hi = q.hi, class = q.class, race = q.race, zone = q.zone }
-      for k, v in pairs(extra) do item[k] = v end
+      local item = { lo = q.lo, hi = q.hi, class = q.class, classes = q.classes, race = q.race, zone = q.zone }
+      for k, v in pairs(extra) do item[k] = v or nil end
       for _, queued in ipairs(queue) do if sameQuery(queued, item) then return end end
       table.insert(queue, 1, item)
     end
@@ -596,19 +724,20 @@ local function onWhoResults()
       local mid = math.floor((q.lo + q.hi) / 2)
       push({ lo = mid + 1 })
       push({ hi = mid })
-      text = text .. " Too many for one search, so it was split."
-    elseif not q.class and not classFilterBroken then
+    elseif not q.class and not classFilterBroken and whoMode() ~= "local" and not (q.classes and #q.classes == 1) then
       local list = #picked > 0 and picked or ns.CLASSES
-      for i = #list, 1, -1 do push({ class = list[i] }) end
-      text = text .. " Too many for one search, so it was split by class."
+      local byFilter = whoMode() == "exclude" or whoMode() == "include"
+      for i = #list, 1, -1 do
+        if byFilter then push({ classes = { list[i] } }) else push({ classes = false, class = list[i] }) end
+      end
     elseif #races > 1 then
       for i = #races, 1, -1 do push({ race = races[i] }) end
-      text = text .. " Too many for one search, so it was split by race."
-    else
-      text = text .. " Only the first " .. WHO_MAX .. " could be read."
     end
   end
-  if #queue > 0 then text = text .. (" Press Search for the next one (%d left)."):format(#queue) end
+  if #queue > 0 then
+    text = text .. (capped and " More players are online than one search shows. Press Search for the next batch (%d left)."
+                             or " Press Search for the next batch (%d left)."):format(#queue)
+  end
   note(text)
 end
 
@@ -675,6 +804,68 @@ end
 local function countContact()
   local sent = TorchcallDB.sent
   sent[#sent + 1] = time()
+end
+
+-- ---------------------------------------------------------------------------
+-- What works where: every first contact is counted by level band, class and hour of the
+-- day, and again when that player answers and when they join.
+-- ---------------------------------------------------------------------------
+
+local function bucket(p, field)
+  if field == "sent" then
+    local level = type(p.level) == "number" and p.level > 0 and p.level or nil
+    local tens = level and math.floor(level / 10) * 10
+    p.bk = { level = level and (level >= 60 and "60" or (math.max(1, tens) .. "-" .. (tens + 9))) or nil,
+             class = p.class, hour = tostring(tonumber(date("%H")) or "") }
+  end
+  if type(p.bk) ~= "table" then return end
+  for kind, key in pairs(p.bk) do
+    local all = TorchcallDB.buckets[kind]
+    if all and type(key) == "string" and key ~= "" then
+      local t = all[key]
+      if not t then t = { sent = 0, replied = 0, joined = 0 } all[key] = t end
+      t[field] = (t[field] or 0) + 1
+    end
+  end
+end
+
+local BUCKET_MIN = 10 -- contacts in a band, class or hour before its rate means anything
+local BUCKET_LABEL = {
+  level = function(key) return key == "60" and "level 60" or ("levels " .. key) end,
+  class = function(key) return className(key) .. "s" end,
+  hour = function(key) local h = tonumber(key) or 0 return ("%d:00 to %d:00"):format(h, (h + 1) % 24) end,
+}
+-- The best level band, class and hour so far, as lines of text. Empty until there is enough to go on.
+function ns.Insights()
+  local lines = {}
+  for _, kind in ipairs({ "level", "class", "hour" }) do
+    local best, bestRate, bestField
+    for key, t in pairs(TorchcallDB.buckets[kind]) do
+      if t.sent >= BUCKET_MIN then
+        local field = t.joined > 0 and "joined" or "replied"
+        local rate = t[field] / t.sent
+        -- a band where people join beats one where they only answer
+        if not best or (field == "joined" and bestField ~= "joined") or (field == bestField and rate > bestRate) then
+          if not (bestField == "joined" and field ~= "joined") then best, bestRate, bestField = key, rate, field end
+        end
+      end
+    end
+    if best and bestRate > 0 then
+      lines[#lines + 1] = ("%s: %d%% %s (%d contacted)"):format(BUCKET_LABEL[kind](best), math.floor(bestRate * 100 + 0.5),
+        bestField == "joined" and "joined" or "answered", TorchcallDB.buckets[kind][best].sent)
+    end
+  end
+  return lines
+end
+
+-- A recruit of yours joined: a horn and their name across the screen. Only you see and hear it.
+local function celebrate(p)
+  if TorchcallDB.opts.sound and type(PlaySoundFile) == "function" then
+    pcall(PlaySoundFile, "Interface\\AddOns\\Torchcall\\Sounds\\join.ogg", "Master")
+  end
+  if type(RaidNotice_AddMessage) == "function" and RaidWarningFrame and ChatTypeInfo and ChatTypeInfo.RAID_WARNING then
+    pcall(RaidNotice_AddMessage, RaidWarningFrame, "A NEW TORCHMAN: " .. p.name, ChatTypeInfo.RAID_WARNING)
+  end
 end
 
 function ns.Render(template, p)
@@ -778,7 +969,9 @@ function ns.Whisper(name, followup)
   end
   local which = followup and 0 or ns.PickTemplate(p)
   -- someone you just played with gets the line written for that, not a cold opener
-  local opener = (not followup) and (p.ran and db.groupmsg:find("%S") and db.groupmsg or db.templates[which])
+  -- and a class the guild is short of gets the line that says so
+  local opener = (not followup) and ((p.ran and db.groupmsg:find("%S") and db.groupmsg)
+    or (needed(p) and usable(db.needmsg, p) and db.needmsg) or db.templates[which])
   local text = ns.Render(followup and db.reply or opener, p)
   local ok, why = whisperReady(text, followup and "The follow-up" or "The message")
   if not ok then return false, why end
@@ -792,6 +985,7 @@ function ns.Whisper(name, followup)
     db.contacted[name] = p.t
     db.stats.whispered = db.stats.whispered + 1
     ns.TemplateStat(p.tpl, "sent")
+    bucket(p, "sent")
     countContact()
     if ns.Comm then ns.Comm.Tell(name) end
   else
@@ -904,6 +1098,10 @@ function ns.CheckIn(name)
   if p.checked then return false, name .. " already had a check-in." end
   if time() - (p.t or 0) < CHECKIN_AFTER then return false, name .. " only just joined. Give it a couple of days." end
   local text = ns.Render(db.checkin, p)
+  -- not in the Discord yet, as far as you have ticked: the check-in carries the link, if it fits
+  if text ~= "" and not (p.steps and p.steps.discord) and ns.DISCORD and not text:find(ns.DISCORD, 1, true) and #text + #ns.DISCORD + 24 <= 255 then
+    text = text .. " Our Discord is " .. ns.DISCORD .. "."
+  end
   local ok, why = whisperReady(text, "The check-in")
   if not ok then return false, why end
   ok, why = sendChat(text, "WHISPER", name)
@@ -1023,6 +1221,7 @@ function ns.Invite(name)
   db.stats.invited = db.stats.invited + 1
   db.stats[p.path].invited = db.stats[p.path].invited + 1
   if first then
+    bucket(p, "sent")
     countContact()
     if ns.Comm then ns.Comm.Tell(name) end
   end
@@ -1049,6 +1248,87 @@ function ns.Forget(name)
   TorchcallDB.prospects[p.name] = nil
   changed()
   return true
+end
+
+-- ---------------------------------------------------------------------------
+-- The first week. Three things a recruit who stays has usually done: joined the Discord,
+-- said something in guild chat, and run something with a guildmate. The last two are noticed
+-- by the addon; the first is yours to tick.
+-- ---------------------------------------------------------------------------
+
+ns.STEPS = { { "discord", "in the Discord" }, { "hello", "said hello in guild chat" }, { "run", "grouped with you" } }
+
+local function recruit(name)
+  local p = findProspect(name)
+  if p and p.status == "joined" and not p.by then return p end
+end
+
+function ns.Recruits()
+  local list, now = {}, time()
+  for _, p in pairs(TorchcallDB.prospects) do
+    if p.status == "joined" and not p.by and now - (p.t or 0) <= CHECKIN_UNTIL then list[#list + 1] = p end
+  end
+  table.sort(list, function(a, b) if a.t ~= b.t then return a.t > b.t end return a.name < b.name end)
+  return list
+end
+
+-- Ticks or unticks one step for a recruit. on = nil flips it.
+function ns.Step(name, key, on)
+  local p = recruit(name)
+  if not p then return false, "That is for someone you recruited who joined." end
+  local known
+  for _, step in ipairs(ns.STEPS) do if step[1] == key then known = true end end
+  if not known then return false, "The steps are: discord, hello, run." end
+  p.steps = type(p.steps) == "table" and p.steps or {}
+  if on == nil then on = not p.steps[key] end
+  p.steps[key] = on and true or nil
+  changed()
+  return true, p
+end
+
+local function noticeStep(name, key)
+  local p = recruit(name)
+  if not p or (p.steps and p.steps[key]) then return end
+  p.steps = type(p.steps) == "table" and p.steps or {}
+  p.steps[key] = true
+  changed()
+end
+
+-- People who answered and are still waiting on you for an invite or the Discord line.
+function ns.FollowUps(olderThan)
+  local list, now = {}, time()
+  for _, p in pairs(TorchcallDB.prospects) do
+    if answered(p) and now - (p.replied or now) >= (olderThan or 0) then list[#list + 1] = p end
+  end
+  table.sort(list, function(a, b) if a.replied ~= b.replied then return a.replied < b.replied end return a.name < b.name end)
+  return list
+end
+
+-- Your own numbers for the recruiters' board.
+function ns.MyScore()
+  local s, week, now = TorchcallDB.stats, 0, time()
+  for _, p in pairs(TorchcallDB.prospects) do
+    if p.status == "joined" and not p.by and now - (p.t or 0) <= 7 * 86400 then week = week + 1 end
+  end
+  return { joined = s.joined, stayed = s.cold.stayed + s.warm.stayed, week = week }
+end
+
+-- Every recruiter heard from in the last month, you included, best week first.
+function ns.Board()
+  local rows, now = {}, time()
+  local mine = ns.MyScore()
+  rows[1] = { name = ns.myName or "You", joined = mine.joined, stayed = mine.stayed, week = mine.week, me = true }
+  for name, r in pairs(TorchcallDB.board) do
+    if type(r) == "table" and now - (r.t or 0) <= 30 * 86400 and name ~= ns.myName then
+      rows[#rows + 1] = { name = name, joined = r.joined or 0, stayed = r.stayed or 0, week = r.week or 0 }
+    end
+  end
+  table.sort(rows, function(a, b)
+    if a.week ~= b.week then return a.week > b.week end
+    if a.joined ~= b.joined then return a.joined > b.joined end
+    return a.name < b.name
+  end)
+  return rows
 end
 
 -- The player the Next button would act on.
@@ -1085,6 +1365,7 @@ function ns.AddGroup()
     if plain(try(UnitExists, unit)) and plain(try(UnitIsPlayer, unit)) then
       local name = fullName(unit)
       local guild = try(GetGuildInfo, unit)
+      if name then noticeStep(name, "run") end
       if name and name ~= myName then
         if issecret(guild) then
           -- the game will not say: leave them alone
@@ -1310,6 +1591,10 @@ function handlers.CHAT_MSG_SYSTEM(text)
           db.stats.joined = db.stats.joined + 1
           if p.tpl then ns.TemplateStat(p.tpl, "joined") end
           if p.path then db.stats[p.path].joined = db.stats[p.path].joined + 1 end
+          bucket(p, "joined")
+          celebrate(p)
+          p.status, p.t = "joined", time()
+          if ns.Comm and ns.Comm.Score then ns.Comm.Score() end
         end
         p.status, p.t = "joined", time()
         ns.Print(p.name .. " joined the guild.")
@@ -1340,6 +1625,7 @@ function handlers.CHAT_MSG_WHISPER(text, sender)
   if not p.replied then
     TorchcallDB.stats.replied = TorchcallDB.stats.replied + 1
     if p.tpl then ns.TemplateStat(p.tpl, "replied") end
+    bucket(p, "replied")
   end
   p.replied = time()
   p.said = type(text) == "string" and text:gsub("|", ""):sub(1, 120) or nil
@@ -1353,6 +1639,22 @@ end
 
 function handlers.WHO_LIST_UPDATE()
   onWhoResults()
+end
+
+-- A recruit of yours said something in guild chat: that step is done.
+function handlers.CHAT_MSG_GUILD(_, sender)
+  sender = plain(sender)
+  if type(sender) == "string" then noticeStep(sender, "hello") end
+end
+
+-- A recruit of yours is in your party: so is that one.
+function handlers.GROUP_ROSTER_UPDATE()
+  local inRaid = plain(try(IsInRaid)) == true
+  local count = tonumber(plain(try(GetNumGroupMembers))) or 0
+  for i = 1, inRaid and math.min(count, 40) or math.min(count, 4) do
+    local name = fullName((inRaid and "raid" or "party") .. i)
+    if name then noticeStep(name, "run") end
+  end
 end
 
 function handlers.GUILD_ROSTER_UPDATE()
@@ -1373,6 +1675,16 @@ function handlers.PLAYER_LOGIN()
   -- ask the game for the guild roster once, so recruits can be checked against it. A request
   -- for data: nobody is contacted.
   if C_Timer and C_Timer.After then
+    -- people who wrote back and were left hanging are the first thing to see
+    C_Timer.After(20, function()
+      if not TorchcallDB then return end
+      local waiting = ns.FollowUps(600)
+      if #waiting == 0 then return end
+      local names = {}
+      for i = 1, math.min(#waiting, 5) do names[i] = waiting[i].name end
+      ns.Print(("%d %s answered you and %s still waiting: %s%s. They are at the top of the list."):format(#waiting, #waiting == 1 and "person" or "people",
+        #waiting == 1 and "is" or "are", table.concat(names, ", "), #waiting > 5 and " and more" or ""))
+    end)
     C_Timer.After(12, function()
       if TorchcallDB and myGuild() and C_GuildInfo and C_GuildInfo.GuildRoster then pcall(C_GuildInfo.GuildRoster) end
     end)
@@ -1406,6 +1718,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
 end)
 
 frame:RegisterEvent("ADDON_LOADED")
-for _, event in ipairs({ "PLAYER_LOGIN", "WHO_LIST_UPDATE", "CHAT_MSG_SYSTEM", "CHAT_MSG_WHISPER", "CHAT_MSG_ADDON", "GUILD_ROSTER_UPDATE" }) do
+for _, event in ipairs({ "PLAYER_LOGIN", "WHO_LIST_UPDATE", "CHAT_MSG_SYSTEM", "CHAT_MSG_WHISPER", "CHAT_MSG_ADDON", "GUILD_ROSTER_UPDATE", "CHAT_MSG_GUILD", "GROUP_ROSTER_UPDATE" }) do
   pcall(frame.RegisterEvent, frame, event) -- an event this client lacks must not stop the rest
 end

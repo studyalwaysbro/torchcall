@@ -62,7 +62,33 @@ function Comm.Tell(name)
   post(table.concat({ "C", PROTO, token, name }, ";"))
 end
 
+-- This recruiter's totals, for the board: joined, still here a week later, joined this week.
+function Comm.Score()
+  if not ns.MyGuild() then return end
+  local mine = ns.MyScore()
+  post(table.concat({ "S", PROTO, token, mine.joined .. "," .. mine.stayed .. "," .. mine.week }, ";"))
+end
+
+local BOARD_CAP = 60
+local function noteScore(by, body)
+  local joined, stayed, week = tostring(body):match("^(%d+),(%d+),(%d+)$")
+  joined, stayed, week = tonumber(joined), tonumber(stayed), tonumber(week)
+  if not joined or joined > 100000 or stayed > joined or week > joined or not validName(by) then return false end
+  local board = TorchcallDB.board
+  if not board[by] then
+    local count, oldest = 0, nil
+    for name, r in pairs(board) do
+      count = count + 1
+      if not oldest or (r.t or 0) < (board[oldest].t or 0) then oldest = name end
+    end
+    if count >= BOARD_CAP and oldest then board[oldest] = nil end
+  end
+  board[by] = { joined = joined, stayed = stayed, week = week, t = time() }
+  return true
+end
+
 local function shareRecent()
+  Comm.Score()
   local now, names = time(), {}
   for name, p in pairs(TorchcallDB.prospects) do
     if SHARED[p.status] and not p.by and now - (p.t or 0) <= SHARE_MAX_AGE and validName(name) then
@@ -132,6 +158,8 @@ function Comm.handlers.CHAT_MSG_ADDON(prefix, text, channel, sender)
       lastReply = GetTime()
       C_Timer.After(1 + math.random() * 5, shareRecent) -- spread replies out
     end
+  elseif kind == "S" then
+    if noteScore(by, body) and ns.OnChanged then ns.OnChanged() end
   elseif kind == "C" then
     if markTaken(body, by) and ns.OnChanged then ns.OnChanged() end
   elseif kind == "L" and type(body) == "string" then
@@ -148,5 +176,6 @@ function Comm.Init()
     pcall(C_ChatInfo.RegisterAddonMessagePrefix, PREFIX)
   end
   C_Timer.After(12, hello)
+  C_Timer.After(40, Comm.Score)
   C_Timer.NewTicker(WINDOW, flush)
 end

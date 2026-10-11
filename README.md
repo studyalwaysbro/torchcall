@@ -6,8 +6,8 @@ It finds players with no guild, opens with one short question, helps you answer 
 
 ## What it does
 
-- **Search by level and class.** Set a level range and pick any mix of the nine classes. Press Search and it asks the game who is online and keeps the players with no guild. Optionally limit it to your current zone.
-- **It gets through a crowded server.** One who search returns 50 players at most. A full answer is split by level, then by class, then by race, so busy levels are still covered. Each search needs its own press.
+- **Search by level and class.** Set a level range and pick any mix of the nine classes. Press Search and it asks the game who is online and keeps the players with no guild. All the classes you picked go out as one search, using the game's own class filter, so the fifty players that come back are the classes you asked for. Optionally limit it to your current zone.
+- **It always shows you something.** One who search returns 50 players at most. When more are online, you get the first 50 at once and the rest is lined up as batches (by level, then class, then race): press Search again for the next one. The button counts down the few seconds the game makes you wait between searches.
 - **Filters that mean it.** The level range, the classes and the optional Latin-alphabet name filter are applied to every result by the addon itself, not just sent to the server. Change them any time and the list follows. The Next button only ever reaches players who pass them.
 - **Prospect list.** Name, level, class, zone. Whisper, Invite or Skip on every row. Press a column title to sort by it.
 - **Next button, or a key.** Works down the list, one player per press. Each press is one whisper or one invite, whichever you set it to. Bind it under Options, Keybindings, AddOns.
@@ -16,6 +16,12 @@ It finds players with no guild, opens with one short question, helps you answer 
 - **Answers, one press each.** When someone writes back they move to the top, and Reply opens a panel with what they said and a button per topic: what the guild is, how it started, time and real life, raids, PvP, leveling, new players, a dungeon run first, and the Discord and site line. The addon reads their reply and highlights the answer that fits, or tells you it sounds like a yes or a no. Each answer goes to a player once, five at most, and only to someone who wrote to you first. All of them are editable on the Answers tab.
 - **Add my group.** One press puts everyone in your party or raid who has no guild at the top of the list, with an opening line written for someone you just played with. Playing together first is the best reason anyone has to say yes.
 - **Welcome and check-in.** When someone you recruited joins, one press says hello in guild chat. A few days later the row offers a check-in whisper, once. The first week decides who stays.
+- **Classes we need.** `/torchcall need healers` (or `tanks`, or class names). Those players come first on the list, are marked, and get an opener that says the guild is short a Priest, not a generic pitch.
+- **What works where.** Every contact is counted by level band, class and hour of the day. `/torchcall stats` names the band, class and hour that answer and join most, once there are ten contacts to go on.
+- **Recruiters' board.** `/torchcall board` ranks every recruiter in the guild running Torchcall: joined this week, all time, and still here a week later.
+- **Nobody left hanging.** At login it tells you who answered and is still waiting on you. `/torchcall warm` lists them, longest wait first.
+- **A horn when they join.** Your recruit accepts: a horn, and their name across your screen.
+- **The first week.** For each recruit: in the Discord, said hello in guild chat, grouped with you. The last two are noticed by the addon, the first you tick with `/torchcall step <name> discord`. `/torchcall recruits` shows all three, and the check-in whisper carries the Discord link for anyone who has not joined it.
 - **Who stayed.** When the guild roster loads, recruits who joined at least a week ago are marked as still here or gone. The Answers tab shows invites after a conversation next to invites with no conversation: how many were accepted and how many were still in the guild a week later.
 - **Guild window texts.** `/torchcall guild` shows the guild Info text and message of the day next to a version with the Discord and the site in it, and writes one on command if your rank can. It never writes them by itself.
 - **Results.** Joins and declines are read from the game's own messages and counted.
@@ -56,6 +62,11 @@ On Linux with [Yeeterson Forge](https://github.com/studyalwaysbro/yeeterson-forg
 | `/torchcall skip <name>` | Never contact this player |
 | `/torchcall cap <number>` | New people per hour |
 | `/torchcall cap day <number or off>` | New people per day, or no daily limit |
+| `/torchcall need <classes>` | Classes the guild is short of: `healers`, `tanks`, class names, `off` |
+| `/torchcall warm` | Who answered and is still waiting on you |
+| `/torchcall board` | Recruiters this week |
+| `/torchcall recruits` | Your recruits and their first week |
+| `/torchcall step <name> discord` | Tick a first-week step |
 | `/torchcall help` | The rest |
 
 ## Is this allowed?

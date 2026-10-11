@@ -1034,6 +1034,200 @@ check(ns.Funnel().advice:find("Only 5%% of whispers"), "his real numbers produce
 M.advance(25)
 check(not table.concat(M.printed, "\n"):find("due", 1, true) or true, "login reminder runs without error")
 
+
+-- ===========================================================================
+-- 1.4: the game's own class filter, a search that always shows something, needed classes,
+-- what works where, the recruiters' board, follow-ups, the join horn, the first week
+-- ===========================================================================
+M.whoMode = nil -- from here the addon is on its real default
+M.reset(true)
+ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
+db = TorchcallDB
+local slash = SlashCmdList["TORCHCALL"]
+local function ids(filters) local t = {} for _, id in ipairs(filters.classIDs) do t[#t + 1] = id end table.sort(t) return table.concat(t, ",") end
+local function crowd(n, class, guild, tag)
+  local list = {}
+  for i = 1, n do list[i] = P((tag or "Crowd") .. " " .. class .. i, guild, 25, class) end
+  return list
+end
+eq(db.opts.whoMode, "exclude", "a fresh install asks with the game's class filter")
+ns.ToggleClass("PRIEST") ns.ToggleClass("MAGE")
+M.advance(10)
+local n0 = #M.sentWho
+check(ns.StartSearch(20, 30), "a search for two classes goes out")
+eq(#M.sentWho, n0 + 1, "as one search, not one per class")
+eq(M.sentWho[#M.sentWho], "20-30", "with only the levels in the words")
+eq(ids(M.sentFilters[#M.sentWho]), "1,2,3,4,7,9,11", "and every other class filtered out, the way the game's own who window does it")
+-- fifty of the right classes come back, hundreds more are online: fifty are shown, nothing is refused
+local batch = crowd(30, "PRIEST") for _, m in ipairs(crowd(20, "MAGE")) do batch[#batch + 1] = m end
+M.answerWho(batch, 400)
+eq(ns.Counts().new, 50, "all fifty are on the list")
+check(ns.searchNote:find("showing 50 of 400 online", 1, true), "the note says how many are showing: " .. ns.searchNote)
+check(not ns.searchNote:lower():find("too many", 1, true) and not ns.searchNote:lower():find("could not", 1, true) and not ns.searchNote:lower():find("only the first", 1, true),
+  "and never reads as a refusal: " .. ns.searchNote)
+check(ns.searchNote:find("next batch", 1, true) and ns.QueueSize() == 2, "the rest is queued as batches: " .. ns.searchNote)
+eq(db.opts.whoMode, "exclude", "an answer of the right classes keeps the filter as it is")
+check(not ns.NextSearch(), "a press inside the gap sends nothing")
+check(ns.searchNote:find("^Ready in %d+ seconds"), "and says when, without the word limit: " .. ns.searchNote)
+check(ns.SearchWait() > 0, "the wait is known to the window")
+M.advance(6) eq(ns.SearchWait(), 0, "and runs out")
+check(ns.NextSearch(), "the next batch goes")
+eq(M.sentWho[#M.sentWho], "20-25", "the lower half of the levels")
+eq(ids(M.sentFilters[#M.sentWho]), "1,2,3,4,7,9,11", "still filtered to the two classes")
+M.answerWho(crowd(50, "PRIEST", nil, "Low"), 90)
+M.advance(6) ns.NextSearch() M.answerWho({}, 0)
+-- a single level with more than fifty: one class at a time, by the filter
+M.advance(6)
+ns.StartSearch(30, 30) M.answerWho(crowd(50, "MAGE", "Some Guild", "Guilded"), 200)
+check(ns.searchNote:find("0 new without a guild", 1, true) and ns.searchNote:find("next batch", 1, true), "fifty people in guilds is still not an error: " .. ns.searchNote)
+M.advance(6) ns.NextSearch()
+eq(M.sentWho[#M.sentWho], "30-30", "one level") eq(ids(M.sentFilters[#M.sentWho]), "1,2,3,4,7,8,9,11", "one class: everything but Priest filtered out")
+M.answerWho({}, 0)
+
+-- the filter read the other way round: the answer is all the wrong classes, and the addon learns
+M.advance(6)
+ns.StartSearch(20, 30)
+M.answerWho(crowd(10, "WARRIOR", nil, "Wrong"), 10)
+eq(db.opts.whoMode, "include", "a wrong-class answer flips the reading of the filter")
+check(ns.searchNote:find("Press Search again", 1, true) and ns.QueueSize() >= 1, "and the same search is ready to go again: " .. ns.searchNote)
+check(db.prospects["Wrong WARRIOR1"], "the guildless players that did come back are kept")
+M.advance(6) ns.NextSearch()
+eq(ids(M.sentFilters[#M.sentWho]), "5,8", "now the picked classes themselves are sent")
+M.answerWho(crowd(5, "ROGUE", nil, "Wrong"), 5)
+eq(db.opts.whoMode, "text", "wrong again: this client ignores the filter, so classes go in the words")
+M.advance(6) ns.NextSearch()
+eq(M.sentWho[#M.sentWho], '20-30 c-"Priest"', "one class in the words") eq(M.sentFilters[#M.sentWho], false, "and no filter table")
+M.answerWho(crowd(3, "HUNTER", nil, "Wrong"), 3)
+eq(db.opts.whoMode, "local", "and if that is ignored too, classes are filtered here")
+M.advance(6) ns.StartSearch(20, 30)
+eq(M.sentWho[#M.sentWho], "20-30", "then a search is just the levels")
+M.answerWho({ P("Local Priest", nil, 22, "PRIEST"), P("Local Rogue", nil, 22, "ROGUE") }, 2)
+local shownNames = {}
+for _, p in ipairs(ns.List("new")) do shownNames[p.name] = true end
+check(shownNames["Local Priest"] and not shownNames["Local Rogue"], "and the list still shows only the classes picked")
+db.opts.whoMode = "exclude"
+ns.ToggleClass(nil)
+
+-- classes the guild needs come first and get their own opener
+M.reset(true)
+ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
+db = TorchcallDB slash = SlashCmdList["TORCHCALL"]
+M.inGuild, M.canInvite = true, true
+M.advance(10)
+ns.StartSearch(1, 60)
+M.answerWho({ P("Wanda Warrior", nil, 30, "WARRIOR"), P("Petra Priest", nil, 28, "PRIEST"), P("Mo Mage", nil, 31, "MAGE") }, 3)
+slash("need healers")
+eq(table.concat(ns.NeedList(), ","), "PALADIN,PRIEST,SHAMAN,DRUID", "healers means the four classes that heal")
+eq(ns.List("new")[1].name, "Petra Priest", "a needed class is first on the list")
+eq(ns.NextTarget().name, "Petra Priest", "and first for the Next button")
+M.advance(10)
+check(ns.Whisper("Petra Priest"), "whisper to a needed class")
+check(M.sentChat[#M.sentChat][1]:find("is short a Priest", 1, true), "uses the opener written for it: " .. M.sentChat[#M.sentChat][1])
+M.advance(10)
+check(ns.Whisper("Wanda Warrior"), "whisper to anyone else")
+check(not M.sentChat[#M.sentChat][1]:find("is short a", 1, true), "uses an ordinary opener")
+slash("need tank and mage") eq(table.concat(ns.NeedList(), ","), "WARRIOR,PALADIN,MAGE,DRUID", "words and class names mix")
+eq(#ns.SetNeed("wizards priest"), 1, "an unknown word is reported") eq(table.concat(ns.NeedList(), ","), "PRIEST", "and the known ones still count")
+slash("need off") eq(#ns.NeedList(), 0, "off clears it")
+slash("need")
+
+-- what works where
+for i = 1, 12 do
+  db.prospects["Band " .. i] = { name = "Band " .. i, status = "new", level = 24, class = "PRIEST", seen = time() }
+end
+db.opts.hourly, db.opts.daily = 60, 0
+for i = 1, 12 do
+  M.advance(10)
+  check(ns.Whisper("Band " .. i), "contact " .. i)
+  if i <= 6 then M.fire("CHAT_MSG_WHISPER", "sure", "Band " .. i) end
+end
+eq(db.buckets.level["20-29"].sent, 13, "contacts are counted by level band (Petra was 28)")
+eq(db.buckets.level["20-29"].replied, 6, "and answers")
+eq(db.buckets.class.PRIEST.sent, 13, "and by class")
+local insight = table.concat(ns.Insights(), " | ")
+check(insight:find("levels 20-29: 46% answered", 1, true) and insight:find("Priests: 46% answered", 1, true), "the best band and class are named: " .. insight)
+check(not insight:find("Warrior", 1, true), "a class with one contact is not ranked")
+M.fire("CHAT_MSG_SYSTEM", "Band 1 has joined the guild.")
+eq(db.buckets.level["20-29"].joined, 1, "a join is counted in its band")
+check(table.concat(ns.Insights(), " | "):find("levels 20-29: 8% joined", 1, true), "and once anyone joins, joining is what is ranked: " .. table.concat(ns.Insights(), " | "))
+slash("stats")
+
+-- the join horn
+eq(M.playedFiles[#M.playedFiles], "Interface\\AddOns\\Torchcall\\Sounds\\join.ogg", "a recruit joining plays the horn")
+eq(M.notices[#M.notices], "A NEW TORCHMAN: Band 1", "and puts their name across the screen")
+local horns = #M.playedFiles
+M.fire("CHAT_MSG_SYSTEM", "Band 1 has joined the guild.")
+eq(#M.playedFiles, horns, "once, not every time the line repeats")
+M.fire("CHAT_MSG_SYSTEM", "Stranger Danger has joined the guild.")
+eq(#M.playedFiles, horns, "and not for someone who was never yours")
+db.opts.sound = false
+M.fire("CHAT_MSG_SYSTEM", "Band 2 has joined the guild.")
+eq(#M.playedFiles, horns, "with sound off there is no horn") eq(M.notices[#M.notices], "A NEW TORCHMAN: Band 2", "but the name still shows")
+db.opts.sound = true
+do local f = io.open("Torchcall/Sounds/join.ogg", "rb") check(f and f:read(4) == "OggS", "the horn is in the addon") if f then f:close() end end
+
+-- the first week
+eq(#ns.Recruits(), 2, "two recruits")
+M.fire("CHAT_MSG_GUILD", "hi all", "Band 1")
+check(db.prospects["Band 1"].steps.hello, "speaking in guild chat ticks hello")
+M.fire("CHAT_MSG_GUILD", "hi", "Somebody Else") -- not a recruit: nothing
+M.group = { { name = "Band 2", guild = "The True Torchmen", class = "PRIEST", level = 24 } }
+M.fire("GROUP_ROSTER_UPDATE")
+check(db.prospects["Band 2"].steps and db.prospects["Band 2"].steps.run, "being in your party ticks run")
+M.group = {}
+slash("step Band 1 discord") check(db.prospects["Band 1"].steps.discord, "Discord is ticked by hand")
+slash("step Band 1 discord") check(not db.prospects["Band 1"].steps.discord, "and unticked the same way")
+local ok, why = ns.Step("Band 3", "discord") check(not ok and why:find("joined", 1, true), "only for someone who joined")
+ok, why = ns.Step("Band 1", "nonsense") check(not ok, "only the three steps")
+slash("step") slash("recruits")
+M.advance(3 * 86400)
+check(ns.CheckIn("Band 1"), "check-in to a recruit not in the Discord")
+check(M.sentChat[#M.sentChat][1]:find("discord.gg/passthetorch", 1, true), "carries the Discord link: " .. M.sentChat[#M.sentChat][1])
+check(#M.sentChat[#M.sentChat][1] <= 255, "and still fits")
+ns.Step("Band 2", "discord", true)
+M.advance(10)
+check(ns.CheckIn("Band 2"), "check-in to one who is")
+check(not M.sentChat[#M.sentChat][1]:find("discord.gg", 1, true), "leaves the link out")
+
+-- follow-ups
+eq(#ns.FollowUps(), 4, "four people answered and were never invited") -- Band 3 to 6
+check(#ns.FollowUps(10 * 86400) == 0, "none of them that long ago")
+slash("warm")
+M.printed = {}
+M.reset(false)
+ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
+db = TorchcallDB slash = SlashCmdList["TORCHCALL"]
+M.advance(30)
+local reminded = false
+for _, text in ipairs(M.printed) do if text:find("4 people answered you and are still waiting", 1, true) then reminded = true end end
+check(reminded, "logging in says who is still waiting on you")
+
+-- the recruiters' board
+local mine = ns.MyScore()
+eq(mine.joined, 2, "your joins") eq(mine.week, 2, "this week")
+M.advance(60)
+local sentScore
+for _, m in ipairs(M.sentAddon) do if m[2]:find("^S;1;") then sentScore = m[2] end end
+check(sentScore and sentScore:find(";2,0,2$"), "your numbers are shared with the guild: " .. tostring(sentScore))
+M.fire("CHAT_MSG_ADDON", "Torchcall", "S;1;abc123;9,4,3", "GUILD", "Hyde Recruiter")
+M.fire("CHAT_MSG_ADDON", "Torchcall", "S;1;abc124;1,1,0", "GUILD", "Opb Recruiter")
+local board = ns.Board()
+eq(board[1].name, "Hyde Recruiter", "the best week is on top") eq(board[2].me, true, "you are on it") eq(#board, 3, "three recruiters")
+M.fire("CHAT_MSG_ADDON", "Torchcall", "S;1;abc125;5,9,1", "GUILD", "Liar One")       -- more stayed than joined
+M.fire("CHAT_MSG_ADDON", "Torchcall", "S;1;abc126;99999999,1,1", "GUILD", "Liar Two") -- silly number
+M.fire("CHAT_MSG_ADDON", "Torchcall", "S;1;abc127;x,y,z", "GUILD", "Liar Three")
+M.fire("CHAT_MSG_ADDON", "Torchcall", "S;1;abc128;5,1,1", "WHISPER", "Not Guild")
+eq(#ns.Board(), 3, "numbers that cannot be true, and anything not from the guild, are ignored")
+for i = 1, 80 do M.fire("CHAT_MSG_ADDON", "Torchcall", "S;1;f" .. i .. ";1,0,0", "GUILD", "Flood " .. i) end
+local kept = 0 for _ in pairs(db.board) do kept = kept + 1 end
+check(kept <= 60, "the board cannot be flooded (" .. kept .. ")")
+slash("board") slash("help")
+eq(ns.errors, nil, "no errors in the 1.4 section")
+M.whoMode = "text"
+
 -- the version the addon reports is the version on the box
 do
   local f = assert(io.open("Torchcall/Torchcall.toc"))
