@@ -85,7 +85,7 @@ M.guard = function(kind, target, msg)
       elseif now - rec.contacts[i] < 3600 then hour = hour + 1 end
     end
     if hour >= o.hourly then fail("hourly limit exceeded: " .. hour .. " of " .. o.hourly) end
-    if #rec.contacts >= o.daily then fail("daily limit exceeded") end
+    if o.daily > 0 and #rec.contacts >= o.daily then fail("daily limit exceeded") end
     if not p or p.status ~= "new" then fail("first contact with someone not waiting: " .. tostring(target)) end
     if now - (p.seen or 0) > 12 * 3600 then fail("first contact with someone last seen over 12 hours ago") end
     if viaNext and not rec.grouped[target] then -- someone from your own group is exempt from the filters, by design
@@ -229,7 +229,7 @@ local function answer()
   M.fire("WHO_LIST_UPDATE")
 end
 
-local SLASH = { "", "help", "stats", "search", "search 1-60", "search 10-20", "search 60", "next", "cap 5", "cap 30", "cap 60", "cap 9999",
+local SLASH = { "", "help", "stats", "search", "search 1-60", "search 10-20", "search 60", "next", "cap 5", "cap 30", "cap 60", "cap 9999", "cap day 5", "cap day off", "cap day 100", "cap day x", "cap day 99999",
                 "class mage", "class all", "class warrior priest rogue", "level 1-60", "level 20-40", "level 60-1", "clear", "minimap", "log",
                 "skip", "forget", "welcome", "bogus", "group", "rotate", "answer", "answer raids", "answer bogus", "answer discord", "checkin", "guild", "guild info", "guild motd", "guild zz" }
 
@@ -279,7 +279,7 @@ local STEP = {
   function() ns.SetLevels(R(1, 60), R(1, 60)) end,
   function() if chance(0.3) then ns.SetLevels(1, 60); ns.ToggleClass(nil) end end,
   function() db.opts.latin = chance(0.3) end,
-  function() db.opts.daily = pick({ 3, 8, 100, 100 }) end,
+  function() db.opts.daily = pick({ 3, 8, 100, 100, 0 }) end,
   function() db.opts.mode = pick({ "whisper", "whisper", "invite" }) end,
   function() db.opts.template = R(1, #db.templates) end,
   function() ns.SetSort(pick({ "name", "level", "class", "zone", "seen", "junk" })) end,

@@ -665,9 +665,9 @@ function UI.Refresh()
   if not main or not main:IsShown() then return end
   local db, c = TorchcallDB, ns.Counts()
   local hiddenNote = c.hidden > 0 and (GREY .. " (+" .. c.hidden .. " filtered out)|r") or ""
-  main.summary:SetText(("%sWaiting|r %s%d|r%s    %sAnswered|r %s%d|r    %sWhispered|r %s%d|r    %sInvited|r %s%d|r    %sJoined|r %s%d|r    %shour %d/%d, day %d/%d|r")
+  main.summary:SetText(("%sWaiting|r %s%d|r%s    %sAnswered|r %s%d|r    %sWhispered|r %s%d|r    %sInvited|r %s%d|r    %sJoined|r %s%d|r    %shour %d/%d, day %d%s|r")
     :format(GOLD, WHITE, c.new, hiddenNote, GOLD, WHITE, c.replied, GOLD, WHITE, db.stats.whispered, GOLD, WHITE, db.stats.invited,
-            GOLD, WHITE, db.stats.joined, GREY, ns.SentThisHour(), opts.hourly, ns.SentToday(), opts.daily))
+            GOLD, WHITE, db.stats.joined, GREY, ns.SentThisHour(), opts.hourly, ns.SentToday(), opts.daily > 0 and ("/" .. opts.daily) or " (no daily limit)"))
   main.note:SetText(ns.searchNote or "")
 
   main.zone:SetText(zoneOnly and "My zone only" or "Any zone")
@@ -887,7 +887,8 @@ local function printHelp()
   print("  /torchcall stats           your totals and what is working")
   print("  /torchcall guild           the guild window's Info text and message of the day, and what Torchcall would put there")
   print("  /torchcall skip <name>     never contact this player    /torchcall forget <name>   drop them from the list")
-  print("  /torchcall cap <number>    new people you may contact per hour (now " .. opts.hourly .. ", and " .. opts.daily .. " a day)")
+  print("  /torchcall cap <number>    new people you may contact per hour (now " .. opts.hourly .. ")")
+  print("  /torchcall cap day <number|off>   and per day (now " .. (opts.daily > 0 and opts.daily or "no limit") .. ")")
   print("  /torchcall clear           empty the waiting list    /torchcall minimap   show or hide the button")
   print("  /torchcall log             last debug lines")
 end
@@ -1012,6 +1013,21 @@ local function slash(input)
     else
       local ok, why = ns.Forget(p.name)
       ns.Print(ok and (p.name .. " is off the list.") or why)
+    end
+  elseif cmd == "cap" and rest:lower():find("^day") then
+    -- the daily limit is yours to set: a number, or off for none
+    local value = rest:lower():match("^day%s*(%S*)")
+    local n = tonumber(value)
+    if value == "off" or value == "none" then
+      opts.daily = 0
+      ns.Print("No daily limit. The hourly limit of " .. opts.hourly .. " still holds.")
+      UI.Refresh()
+    elseif n and n >= 1 and n <= 5000 then
+      opts.daily = math.floor(n)
+      ns.Print("You can now contact " .. opts.daily .. " new people a day.")
+      UI.Refresh()
+    else
+      ns.Print("Give a number from 1 to 5000, or off. It is " .. (opts.daily > 0 and opts.daily or "off") .. " now.")
     end
   elseif cmd == "cap" then
     local n = tonumber(rest)

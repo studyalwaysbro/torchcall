@@ -169,8 +169,13 @@ M.advance(5)
 db.opts.daily = 2
 ok, why = ns.Whisper("Dee Fox")
 check(not ok and why:find("today"), "the daily cap holds even when the hour is clear")
-db.opts.daily = 100
-check(ns.Whisper("Dee Fox"), "cap frees up")
+db.opts.daily = 0
+check(ns.Whisper("Dee Fox"), "with the daily limit off the next one goes out")
+SlashCmdList["TORCHCALL"]("cap day 250") eq(db.opts.daily, 250, "the daily limit can be set")
+SlashCmdList["TORCHCALL"]("cap day 99999") eq(db.opts.daily, 250, "a silly number is refused")
+SlashCmdList["TORCHCALL"]("cap day off") eq(db.opts.daily, 0, "and it can be switched off")
+SlashCmdList["TORCHCALL"]("cap day 100") eq(db.opts.daily, 100, "and back on")
+eq(db.opts.hourly, 2, "the hourly limit is untouched by any of that")
 db.opts.hourly = 30
 eq(ns.SentThisHour(), 1, "hour count")
 eq(ns.SentToday(), 3, "day count")

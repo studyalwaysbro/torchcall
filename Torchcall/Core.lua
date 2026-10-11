@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.2.2"
+ns.VERSION = "1.3.0"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -119,7 +119,7 @@ local function initDB()
   if o.mode ~= "invite" then o.mode = "whisper" end -- what the Next button does
   o.template = o.template or 1
   o.hourly = math.min(o.hourly or 30, 60) -- first contacts allowed per hour
-  o.daily = o.daily or 100       -- and per day
+  if type(o.daily) ~= "number" then o.daily = 100 end -- and per day; 0 means no daily limit
   o.gap = o.gap or 4             -- seconds between whispers
   o.lo, o.hi = o.lo or 1, o.hi or 60
   if type(o.classes) ~= "table" then o.classes = {} end -- class token = true; empty means every class
@@ -660,8 +660,8 @@ local function overLimit()
   if ns.SentThisHour() >= o.hourly then
     return ("That is %d new people this hour, which is the limit. Change it with /torchcall cap."):format(o.hourly)
   end
-  if ns.SentToday() >= o.daily then
-    return ("That is %d new people today, which is the daily limit. Pick it up tomorrow."):format(o.daily)
+  if o.daily > 0 and ns.SentToday() >= o.daily then
+    return ("That is %d new people today, which is the daily limit. Pick it up tomorrow, or change it with /torchcall cap day."):format(o.daily)
   end
 end
 

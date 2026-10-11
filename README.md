@@ -19,7 +19,7 @@ It finds players with no guild, opens with one short question, helps you answer 
 - **Who stayed.** When the guild roster loads, recruits who joined at least a week ago are marked as still here or gone. The Answers tab shows invites after a conversation next to invites with no conversation: how many were accepted and how many were still in the guild a week later.
 - **Guild window texts.** `/torchcall guild` shows the guild Info text and message of the day next to a version with the Discord and the site in it, and writes one on command if your rank can. It never writes them by itself.
 - **Results.** Joins and declines are read from the game's own messages and counted.
-- **Limits.** 30 new people an hour, 100 a day and 4 seconds between whispers by default. `/torchcall cap` changes the hourly number, up to 60.
+- **Limits.** 30 new people an hour, 100 a day and 4 seconds between whispers by default. `/torchcall cap` changes the hourly number, up to 60. `/torchcall cap day 300` changes the daily one and `/torchcall cap day off` removes it. These are the addon's own brakes, not the game's: the game may still act on an account that gets reported for spam.
 - **Only its own searches.** A who search you type yourself never puts anyone on the list. If one goes out while Torchcall is waiting for an answer, Torchcall throws its own search back on the queue instead of guessing whose answer arrived.
 - **Your words.** Every message is editable in game with a live character count. Tokens: `{name} {fullname} {level} {class} {zone} {guild}`.
 
@@ -55,6 +55,7 @@ On Linux with [Yeeterson Forge](https://github.com/studyalwaysbro/yeeterson-forg
 | `/torchcall stats` | Totals and what is working |
 | `/torchcall skip <name>` | Never contact this player |
 | `/torchcall cap <number>` | New people per hour |
+| `/torchcall cap day <number or off>` | New people per day, or no daily limit |
 | `/torchcall help` | The rest |
 
 ## Is this allowed?
