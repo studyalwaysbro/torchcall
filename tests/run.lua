@@ -846,6 +846,21 @@ M.rosterHidden = nil
 M.roster = {}
 M.fire("GUILD_ROSTER_UPDATE")
 eq(db.prospects["Hid Den"].stayed, nil, "an empty roster proves nothing either")
+M.roster = { "Ann One", "Somebody Else" }
+M.fire("GUILD_ROSTER_UPDATE")
+eq(db.prospects["Hid Den"].stayed, nil, "a roster without you on it has not loaded: nobody is judged")
+-- a client without the membership check: the roster is walked instead
+local memberCheck = C_GuildInfo.MemberExistsByName
+C_GuildInfo.MemberExistsByName = nil
+db.prospects["Wal Ked"] = { name = "Wal Ked", status = "joined", t = time() - 10 * 86400, path = "warm" }
+M.fire("GUILD_ROSTER_UPDATE")
+eq(db.prospects["Wal Ked"].stayed, nil, "walking a roster without you on it judges nobody")
+M.roster = { "Vesh Torchman", "Wal Ked" }
+M.fire("GUILD_ROSTER_UPDATE")
+eq(db.prospects["Wal Ked"].stayed, true, "walking the roster finds a recruit who stayed")
+eq(db.prospects["Hid Den"].stayed, false, "and one who left")
+C_GuildInfo.MemberExistsByName = memberCheck
+check((M.rosterAsked or 0) >= 1, "the roster is asked for after login")
 
 -- people you played with
 M.sentChat, M.invited = {}, {}

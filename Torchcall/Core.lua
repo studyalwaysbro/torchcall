@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.2.0"
+ns.VERSION = "1.2.1"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -1122,27 +1122,46 @@ end
 
 local STAY_AFTER = 7 * 86400
 
-function ns.ReadRoster()
-  if not myGuild() then return end
-  -- the roster event fires often: only walk the roster when a recruit is waiting to be judged
-  local waiting, now0 = false, time()
-  for _, p in pairs(TorchcallDB.prospects) do
-    if p.status == "joined" and p.stayed == nil and now0 - (p.t or now0) >= STAY_AFTER then waiting = true break end
+-- Answers "is this name in the guild?" for every name asked, or nil when the roster cannot
+-- be trusted yet. The game's own membership check is used when this client has it; the check
+-- is first tried on your own name, because before the roster has loaded it says no to everyone.
+local function rosterLookup()
+  local exists = C_GuildInfo and C_GuildInfo.MemberExistsByName
+  if type(exists) == "function" and myName and plain(try(exists, myName)) == true then
+    return function(name)
+      local found = try(exists, name)
+      if issecret(found) or type(found) ~= "boolean" then return nil end
+      return found
+    end
   end
-  if not waiting then return end
   local n = tonumber(plain(try(GetNumGuildMembers))) or 0
-  if n < 1 then return end
+  if n < 1 then return nil end
   local here = {}
   for i = 1, n do
     local name = plain((try(GetGuildRosterInfo, i)))
-    if type(name) ~= "string" then return end -- a roster we cannot read in full proves nothing
+    if type(name) ~= "string" then return nil end -- a roster we cannot read in full proves nothing
     here[name] = true
     here[(name:gsub("%-[^%-]*$", ""))] = true
   end
-  local s, now, any = TorchcallDB.stats, time(), false
+  if not here[myName] then return nil end -- a list without you on it is not the whole list
+  return function(name) return here[name] == true end
+end
+
+function ns.ReadRoster()
+  if not myGuild() then return end
+  -- the roster event fires often: only look when a recruit is waiting to be judged
+  local waiting, now = {}, time()
   for name, p in pairs(TorchcallDB.prospects) do
-    if p.status == "joined" and p.stayed == nil and now - (p.t or now) >= STAY_AFTER then
-      p.stayed = here[name] == true
+    if p.status == "joined" and p.stayed == nil and now - (p.t or now) >= STAY_AFTER then waiting[#waiting + 1] = name end
+  end
+  if #waiting == 0 then return end
+  local inGuild = rosterLookup()
+  if not inGuild then return end
+  local s, any = TorchcallDB.stats, false
+  for _, name in ipairs(waiting) do
+    local p, found = TorchcallDB.prospects[name], inGuild(name)
+    if found ~= nil then
+      p.stayed = found
       local path = p.path and s[p.path] -- joins from before 1.2 have no path and are not counted
       if path then
         if p.stayed then path.stayed = path.stayed + 1 else path.left = path.left + 1 end
@@ -1351,6 +1370,13 @@ function handlers.PLAYER_LOGIN()
   ns.Log("login", myName .. " v" .. ns.VERSION .. " build " .. tostring((try(GetBuildInfo))))
   if ns.Comm then ns.Comm.Init() end
   if ns.UI then ns.UI.Init() end
+  -- ask the game for the guild roster once, so recruits can be checked against it. A request
+  -- for data: nobody is contacted.
+  if C_Timer and C_Timer.After then
+    C_Timer.After(12, function()
+      if TorchcallDB and myGuild() and C_GuildInfo and C_GuildInfo.GuildRoster then pcall(C_GuildInfo.GuildRoster) end
+    end)
+  end
 end
 
 local frame = CreateFrame("Frame")

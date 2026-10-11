@@ -121,6 +121,13 @@ C_GuildInfo = { Invite = function(name)
   M.invited[#M.invited + 1] = name
 end }
 for k, v in pairs(C_GuildInfoText) do C_GuildInfo[k] = v end
+-- the game's own "is this name in my guild" check; M.noMemberCheck removes it, as on a client without one
+function C_GuildInfo.MemberExistsByName(name)
+  if M.rosterHidden then return M.secret() end
+  for _, n in ipairs(M.roster) do if n == name then return true end end
+  return false
+end
+function C_GuildInfo.GuildRoster() M.rosterAsked = (M.rosterAsked or 0) + 1 end
 local function freshFriendList() return {
   SetWhoToUi = function(on) M.whoToUi = on end,
   SendWho = function(text, origin)
