@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.1.0"
+ns.VERSION = "1.2.0"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -25,6 +25,12 @@ local KEPT_MAX_AGE = 60 * 86400
 local PROSPECT_CAP, LOG_CAP = 3000, 150
 local CONTACTED_CAP = 20000   -- names remembered for good so nobody is ever asked twice
 local TSTATS_CAP = 40
+local ANSWER_MAX = 5          -- answers one player can be sent; past that, talk to them yourself
+local CHECKIN_AFTER = 2 * 86400 -- a recruit is due a check-in this long after joining
+local CHECKIN_UNTIL = 21 * 86400
+local ROTATE_MIN = 20         -- sends each opener gets before the best one is preferred
+local ROTATE_EXPLORE = 5      -- after that, every fifth send still goes to the least tried
+local FUNNEL_MIN = 20         -- contacts on a path before its rate is worth comparing
 
 local issecret = issecretvalue or function() return false end
 
@@ -76,7 +82,21 @@ local function initDB()
     db.templates = {}
     for i, t in ipairs(ns.TEMPLATES) do db.templates[i] = t end
   end
-  if type(db.reply) ~= "string" then db.reply = ns.REPLY end
+  local moved = 0
+  for i, old in ipairs(ns.OLD_TEMPLATES) do
+    if db.templates[i] == old then db.templates[i] = ns.TEMPLATES[i] moved = moved + 1 end
+  end
+  -- all three were the untouched 1.1 set: the openers added since come along too
+  if moved == #ns.OLD_TEMPLATES and #db.templates == moved then
+    for i = moved + 1, #ns.TEMPLATES do db.templates[i] = ns.TEMPLATES[i] end
+  end
+  if type(db.reply) ~= "string" or db.reply == ns.OLD_REPLY then db.reply = ns.REPLY end
+  if type(db.answers) ~= "table" then db.answers = {} end -- [topic] = text, for someone who answered
+  for _, a in ipairs(ns.ANSWERS) do
+    if type(db.answers[a.key]) ~= "string" then db.answers[a.key] = a.text end
+  end
+  if type(db.checkin) ~= "string" then db.checkin = ns.CHECKIN end
+  if type(db.groupmsg) ~= "string" then db.groupmsg = ns.GROUP_TEMPLATE end
   if type(db.welcome) ~= "string" then db.welcome = ns.WELCOME end
   db.tstats = db.tstats or {}       -- [hash of the message text] = { sent, replied, joined, t }
   for key in pairs(db.tstats) do if type(key) ~= "string" then db.tstats[key] = nil end end -- 1.1 betas keyed by slot
@@ -87,7 +107,13 @@ local function initDB()
     if p.status ~= "new" and not db.contacted[name] then db.contacted[name] = p.t or time() end
   end
   local s, o = db.stats, db.opts
-  for _, k in ipairs({ "found", "whispered", "invited", "joined", "declined", "replied" }) do s[k] = s[k] or 0 end
+  for _, k in ipairs({ "found", "whispered", "invited", "joined", "declined", "replied", "answers", "checkins" }) do s[k] = s[k] or 0 end
+  -- how an invite went, split by whether the player had been spoken to first
+  for _, path in ipairs({ "cold", "warm" }) do
+    if type(s[path]) ~= "table" then s[path] = {} end
+    for _, k in ipairs({ "invited", "joined", "declined", "stayed", "left" }) do s[path][k] = s[path][k] or 0 end
+  end
+  if o.rotate == nil then o.rotate = true end -- try every opener, then lean on the one that gets answers
   if o.minimap == nil then o.minimap = true end
   if o.sound == nil then o.sound = true end
   if o.mode ~= "invite" then o.mode = "whisper" end -- what the Next button does
@@ -267,6 +293,7 @@ ns.LatinName = latinName
 -- Does this player pass the filters set in the window right now?
 local function matches(p)
   local o = TorchcallDB.opts
+  if p.ran then return true end -- someone you played with is never filtered away
   -- with a level range set, a player whose level the game would not give does not pass
   if o.lo > 1 or o.hi < LEVEL_CAP then
     local level = p.level
@@ -314,6 +341,7 @@ function ns.List(kind)
   local key, up = SORTS[o.sort] or SORTS.seen, o.sortUp
   table.sort(rows, function(a, b)
     if kind == "new" and answered(a) ~= answered(b) then return answered(a) end
+    if kind == "new" and (a.ran and true or false) ~= (b.ran and true or false) then return a.ran and true or false end
     local x, y = key(a), key(b)
     if x ~= y then
       if up then return x < y end
@@ -662,41 +690,105 @@ function ns.Render(template, p)
   return (text:gsub("%s+", " "):gsub("^ ", ""):gsub(" $", ""))
 end
 
+-- Which opening message the next whisper uses. With rotation on, each one is tried until it
+-- has a fair sample, then the one with the best answer rate is preferred, with every fifth
+-- send still going to the least tried so a slow starter gets a second look.
+-- An opener that leans on something the game did not tell us about this player
+-- ("could use another {class}" with no class) would read broken, so it is passed over.
+local function usable(text, p)
+  if type(text) ~= "string" or not text:find("%S") then return false end
+  if not p then return true end
+  if text:find("{class}", 1, true) and not (p.classStr or p.class) then return false end
+  if text:find("{zone}", 1, true) and not (p.zone and p.zone ~= "") then return false end
+  if text:find("{level}", 1, true) and not (type(p.level) == "number" and p.level > 0) then return false end
+  return true
+end
+
+function ns.PickTemplate(p)
+  local db = TorchcallDB
+  local n = #db.templates
+  local chosen = db.templates[db.opts.template] and db.opts.template or 1
+  if not usable(db.templates[chosen], p) then
+    for i = 1, n do
+      if usable(db.templates[i], p) then chosen = i break end
+    end
+  end
+  if not db.opts.rotate or n < 2 then return chosen end
+  local least, best, total = nil, nil, 0
+  local sent, rate = {}, {}
+  for i = 1, n do
+    local text = db.templates[i]
+    if usable(text, p) then
+      local t = ns.TemplateStat(ns.TemplateKey(text))
+      sent[i], rate[i] = t.sent, t.sent > 0 and t.replied / t.sent or 0
+      total = total + t.sent
+      if not least or sent[i] < sent[least] then least = i end
+      if not best or rate[i] > rate[best] then best = i end
+    end
+  end
+  if not least then return chosen end
+  if sent[least] < ROTATE_MIN or total % ROTATE_EXPLORE == ROTATE_EXPLORE - 1 then return least end
+  return best
+end
+
+local function sendChat(text, channel, target)
+  local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
+  if type(send) ~= "function" then return false, "This client has no chat function for addons." end
+  local ok, err = pcall(send, text, channel, nil, target)
+  if not ok then
+    ns.Log("chat", err)
+    return false, "The game refused that message."
+  end
+  return true
+end
+
+-- The checks every whisper shares: chat allowed here, the pause between whispers, the length.
+local function whisperReady(text, what)
+  local db = TorchcallDB
+  if lockedDown() then return false, "The game holds addon chat in here (instance or match). Try again outside." end
+  local wait = math.max(db.opts.gap - (GetTime() - lastWhisper), db.opts.gap - (time() - (db.lastWhisper or 0)))
+  if wait > 0 then return false, ("Easy. Next whisper in %d seconds."):format(math.ceil(wait)) end
+  if text == "" then return false, what .. " is empty. Write one in the window." end
+  if #text > 255 then return false, what .. " is longer than the game allows (255). Shorten it in the window." end
+  return true
+end
+
+local function whispered()
+  lastWhisper = GetTime()
+  TorchcallDB.lastWhisper = time()
+end
+
+-- Has this player written back, and are they still someone we are talking to?
+local function inConversation(p)
+  return p.replied ~= nil and (p.status == "whispered" or p.status == "invited" or p.status == "joined")
+end
+
 -- One whisper to one player. followup = the Discord line for someone who answered.
 function ns.Whisper(name, followup)
   local db = TorchcallDB
   local p = db.prospects[name]
   if not p then return false, "That player is not on the list." end
   if followup then
-    if not p.replied or (p.status ~= "whispered" and p.status ~= "invited" and p.status ~= "joined") then
-      return false, "The follow-up is only for someone who answered you."
-    end
+    if not inConversation(p) then return false, "The follow-up is only for someone who answered you." end
     if p.linked then return false, name .. " already has the follow-up." end
   elseif p.status ~= "new" then
     return false, name .. " was already contacted."
   elseif goneStale(p) then
     return false, name .. " was last seen too long ago. Run a search."
   end
-  if lockedDown() then return false, "The game holds addon chat in here (instance or match). Try again outside." end
-  local wait = math.max(db.opts.gap - (GetTime() - lastWhisper), db.opts.gap - (time() - (db.lastWhisper or 0)))
-  if wait > 0 then return false, ("Easy. Next whisper in %d seconds."):format(math.ceil(wait)) end
+  local which = followup and 0 or ns.PickTemplate(p)
+  -- someone you just played with gets the line written for that, not a cold opener
+  local opener = (not followup) and (p.ran and db.groupmsg:find("%S") and db.groupmsg or db.templates[which])
+  local text = ns.Render(followup and db.reply or opener, p)
+  local ok, why = whisperReady(text, followup and "The follow-up" or "The message")
+  if not ok then return false, why end
   local limit = not followup and overLimit()
   if limit then return false, limit end
-  local which = db.templates[db.opts.template] and db.opts.template or 1
-  local text = ns.Render(followup and db.reply or db.templates[which], p)
-  if text == "" then return false, "The message is empty. Write one on the Message tab." end
-  if #text > 255 then return false, "That message is longer than the game allows (255). Shorten it on the Message tab." end
-  local sendChat = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
-  if type(sendChat) ~= "function" then return false, "This client has no chat function for addons." end
-  local ok, err = pcall(sendChat, text, "WHISPER", nil, name)
-  if not ok then
-    ns.Log("chat", err)
-    return false, "The game refused that whisper."
-  end
-  lastWhisper = GetTime()
-  db.lastWhisper = time()
+  ok, why = sendChat(text, "WHISPER", name)
+  if not ok then return false, why end
+  whispered()
   if not followup then
-    p.status, p.t, p.tpl = "whispered", time(), ns.TemplateKey(db.templates[which])
+    p.status, p.t, p.tpl = "whispered", time(), ns.TemplateKey(opener)
     db.contacted[name] = p.t
     db.stats.whispered = db.stats.whispered + 1
     ns.TemplateStat(p.tpl, "sent")
@@ -707,6 +799,150 @@ function ns.Whisper(name, followup)
   end
   changed()
   return true
+end
+
+-- ---------------------------------------------------------------------------
+-- Answers: short replies about the guild for someone who wrote back. Each one is a single
+-- whisper from a single press, each topic goes to a player once, and nobody who has not
+-- written to you first can be sent one.
+-- ---------------------------------------------------------------------------
+
+function ns.AnswerTopic(key)
+  for _, a in ipairs(ns.ANSWERS) do
+    if a.key == key then return a end
+  end
+end
+
+-- Reads what a player wrote and names the most fitting next step: an answer topic,
+-- "invite" when they said yes, "skip" when they said no. nil when nothing stands out.
+function ns.Suggest(text)
+  if type(text) ~= "string" then return nil end
+  local lower = " " .. text:lower():gsub("[%p%c]", " "):gsub("%s+", " ") .. " "
+  local function has(words)
+    for _, w in ipairs(words) do
+      if lower:find(" " .. w .. " ", 1, true) or (w:find(" ", 1, true) and lower:find(w, 1, true)) then return true end
+    end
+    return false
+  end
+  if has(ns.SAYS_NO) then return "skip" end
+  local best, bestAt
+  for _, a in ipairs(ns.ANSWERS) do
+    for _, w in ipairs(a.words or {}) do
+      local at = lower:find(" " .. w, 1, true)
+      if at and (not bestAt or at < bestAt) then best, bestAt = a.key, at end
+    end
+  end
+  if best then return best end
+  if has(ns.SAYS_YES) then return "invite" end
+  return nil
+end
+
+-- The topics still unsent to this player, in window order, and how many they have had.
+function ns.AnswersLeft(name)
+  local p = TorchcallDB.prospects[name]
+  local left, had = {}, 0
+  if not p or not inConversation(p) then return left, had end
+  for _, a in ipairs(ns.ANSWERS) do
+    local sent = (p.ans and p.ans[a.key]) or (a.key == "discord" and p.linked)
+    if sent then had = had + 1 else left[#left + 1] = a.key end
+  end
+  if had >= ANSWER_MAX then left = {} end
+  return left, had
+end
+
+function ns.Answer(name, key)
+  local db = TorchcallDB
+  local p = db.prospects[name]
+  if not p then return false, "That player is not on the list." end
+  local topic = ns.AnswerTopic(key)
+  if not topic then return false, "There is no answer called '" .. tostring(key) .. "'." end
+  if not inConversation(p) then return false, "Answers are only for someone who wrote back to you." end
+  if key == "discord" then return ns.Whisper(name, true) end
+  p.ans = type(p.ans) == "table" and p.ans or {}
+  if p.ans[key] then return false, name .. " already has that answer." end
+  local _, had = ns.AnswersLeft(name)
+  if had >= ANSWER_MAX then
+    return false, ("That is %d answers to %s. From here, type to them yourself."):format(had, name)
+  end
+  local text = ns.Render(db.answers[key] or topic.text, p)
+  local ok, why = whisperReady(text, "That answer")
+  if not ok then return false, why end
+  ok, why = sendChat(text, "WHISPER", name)
+  if not ok then return false, why end
+  whispered()
+  p.ans[key] = time()
+  db.stats.answers = db.stats.answers + 1
+  changed()
+  return true
+end
+
+-- ---------------------------------------------------------------------------
+-- After they join: one check-in whisper a few days later. The first week decides whether
+-- a recruit stays, and a recruit nobody speaks to is gone by the second.
+-- ---------------------------------------------------------------------------
+
+local function checkInDue(p)
+  if p.status ~= "joined" or p.checked then return false end
+  local age = time() - (p.t or 0)
+  return age >= CHECKIN_AFTER and age <= CHECKIN_UNTIL
+end
+ns.CheckInDue = checkInDue
+
+function ns.DueCheckIns()
+  local list = {}
+  for _, p in pairs(TorchcallDB.prospects) do
+    if checkInDue(p) then list[#list + 1] = p end
+  end
+  table.sort(list, function(a, b) if a.t ~= b.t then return a.t < b.t end return a.name < b.name end)
+  return list
+end
+
+function ns.CheckIn(name)
+  local db = TorchcallDB
+  local p = db.prospects[name]
+  if not p or p.status ~= "joined" then return false, "A check-in is for someone you recruited who joined." end
+  if p.checked then return false, name .. " already had a check-in." end
+  if time() - (p.t or 0) < CHECKIN_AFTER then return false, name .. " only just joined. Give it a couple of days." end
+  local text = ns.Render(db.checkin, p)
+  local ok, why = whisperReady(text, "The check-in")
+  if not ok then return false, why end
+  ok, why = sendChat(text, "WHISPER", name)
+  if not ok then return false, why end
+  whispered()
+  p.checked = time()
+  db.stats.checkins = db.stats.checkins + 1
+  changed()
+  return true
+end
+
+-- ---------------------------------------------------------------------------
+-- What is working: invites sent cold against invites sent after a conversation.
+-- ---------------------------------------------------------------------------
+
+function ns.Funnel()
+  local s = TorchcallDB.stats
+  local function rate(part, whole) return whole > 0 and math.floor(part * 100 / whole + 0.5) or nil end
+  local f = {
+    whispered = s.whispered, replied = s.replied, replyRate = rate(s.replied, s.whispered),
+    cold = { invited = s.cold.invited, joined = s.cold.joined, declined = s.cold.declined, rate = rate(s.cold.joined, s.cold.invited),
+             stayed = s.cold.stayed, left = s.cold.left, kept = rate(s.cold.stayed, s.cold.stayed + s.cold.left) },
+    warm = { invited = s.warm.invited, joined = s.warm.joined, declined = s.warm.declined, rate = rate(s.warm.joined, s.warm.invited),
+             stayed = s.warm.stayed, left = s.warm.left, kept = rate(s.warm.stayed, s.warm.stayed + s.warm.left) },
+  }
+  if f.cold.invited >= FUNNEL_MIN and f.warm.invited >= FUNNEL_MIN then
+    if f.warm.rate > f.cold.rate then
+      f.advice = ("Invites after a conversation are accepted %d%% of the time, cold ones %d%%. Talk first."):format(f.warm.rate, f.cold.rate)
+    elseif f.cold.rate > f.warm.rate then
+      f.advice = ("Cold invites are accepted %d%% of the time, invites after a conversation %d%%. People who join without a word tend to leave the same way, so watch who stays."):format(f.cold.rate, f.warm.rate)
+    else
+      f.advice = ("Cold invites and invites after a conversation are both accepted %d%% of the time."):format(f.cold.rate)
+    end
+  elseif s.whispered >= FUNNEL_MIN and (f.replyRate or 0) < 10 then
+    f.advice = ("Only %d%% of whispers get an answer. Try a shorter opener, or leave rotation on and let it find one."):format(f.replyRate or 0)
+  else
+    f.advice = "Not enough contacts yet to say what works. It takes about twenty on each path."
+  end
+  return f
 end
 
 -- How each opening message is doing: sent, answered, joined. Results belong to the exact
@@ -749,13 +985,8 @@ function ns.Welcome(name)
   local text = ns.Render(db.welcome, p)
   if text == "" then return false, "The welcome line is empty. Write one on the Message tab." end
   if #text > 255 then return false, "The welcome line is longer than the game allows (255)." end
-  local sendChat = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
-  if type(sendChat) ~= "function" then return false, "This client has no chat function for addons." end
-  local ok, err = pcall(sendChat, text, "GUILD")
-  if not ok then
-    ns.Log("chat", err)
-    return false, "The game refused that message."
-  end
+  local ok, why = sendChat(text, "GUILD")
+  if not ok then return false, why end
   lastWelcome = GetTime()
   p.welcomed = true
   changed()
@@ -786,9 +1017,11 @@ function ns.Invite(name)
     return false, "The game refused that invite."
   end
   lastInvite = GetTime()
+  p.path = p.replied and "warm" or "cold" -- had they spoken to us before the invite?
   p.status, p.t = "invited", time()
   db.contacted[name] = p.t
   db.stats.invited = db.stats.invited + 1
+  db.stats[p.path].invited = db.stats[p.path].invited + 1
   if first then
     countContact()
     if ns.Comm then ns.Comm.Tell(name) end
@@ -835,6 +1068,135 @@ function ns.Next()
   end
   if TorchcallDB.opts.mode == "invite" then return ns.Invite(p.name) end
   return ns.Whisper(p.name)
+end
+
+-- ---------------------------------------------------------------------------
+-- People you have played with. Someone from your own party who has no guild is the best
+-- prospect there is, so one press puts them on the list, marked, at the top.
+-- ---------------------------------------------------------------------------
+
+function ns.AddGroup()
+  local inRaid = plain(try(IsInRaid)) == true
+  local count = tonumber(plain(try(GetNumGroupMembers))) or 0
+  if count < 2 then return false, "You are not in a group." end
+  local added, guilded, known = {}, 0, 0
+  for i = 1, inRaid and math.min(count, 40) or 4 do
+    local unit = (inRaid and "raid" or "party") .. i
+    if plain(try(UnitExists, unit)) and plain(try(UnitIsPlayer, unit)) then
+      local name = fullName(unit)
+      local guild = try(GetGuildInfo, unit)
+      if name and name ~= myName then
+        if issecret(guild) then
+          -- the game will not say: leave them alone
+        elseif type(guild) == "string" and guild ~= "" then
+          guilded = guilded + 1
+        elseif TorchcallDB.prospects[name] or TorchcallDB.contacted[name] then
+          known = known + 1
+          local p = TorchcallDB.prospects[name]
+          if p and p.status == "new" then p.ran, p.seen = true, time() end
+        else
+          local _, class = try(UnitClass, unit)
+          local level = plain(try(UnitLevel, unit))
+          TorchcallDB.prospects[name] = { name = name, status = "new", ran = true, seen = time(),
+            level = type(level) == "number" and level > 0 and level or 0,
+            class = plain(class), classStr = plain((try(UnitClass, unit))), race = plain((try(UnitRace, unit))),
+            zone = plain(try(GetRealZoneText)) }
+          TorchcallDB.stats.found = TorchcallDB.stats.found + 1
+          added[#added + 1] = name
+        end
+      end
+    end
+  end
+  changed()
+  if #added == 0 then
+    if known > 0 then return false, "Everyone in this group without a guild is already on your list." end
+    return false, guilded > 0 and "Everyone in this group already has a guild." or "Nobody else in this group could be read."
+  end
+  return true, ("Added %s. They are at the top of the list, with the line for people you have played with."):format(table.concat(added, ", "))
+end
+
+-- ---------------------------------------------------------------------------
+-- Who stayed. When the guild roster is read, each recruit who joined at least a week ago
+-- is marked as still here or gone, once. Getting someone in is half of it.
+-- ---------------------------------------------------------------------------
+
+local STAY_AFTER = 7 * 86400
+
+function ns.ReadRoster()
+  if not myGuild() then return end
+  -- the roster event fires often: only walk the roster when a recruit is waiting to be judged
+  local waiting, now0 = false, time()
+  for _, p in pairs(TorchcallDB.prospects) do
+    if p.status == "joined" and p.stayed == nil and now0 - (p.t or now0) >= STAY_AFTER then waiting = true break end
+  end
+  if not waiting then return end
+  local n = tonumber(plain(try(GetNumGuildMembers))) or 0
+  if n < 1 then return end
+  local here = {}
+  for i = 1, n do
+    local name = plain((try(GetGuildRosterInfo, i)))
+    if type(name) ~= "string" then return end -- a roster we cannot read in full proves nothing
+    here[name] = true
+    here[(name:gsub("%-[^%-]*$", ""))] = true
+  end
+  local s, now, any = TorchcallDB.stats, time(), false
+  for name, p in pairs(TorchcallDB.prospects) do
+    if p.status == "joined" and p.stayed == nil and now - (p.t or now) >= STAY_AFTER then
+      p.stayed = here[name] == true
+      local path = p.path and s[p.path] -- joins from before 1.2 have no path and are not counted
+      if path then
+        if p.stayed then path.stayed = path.stayed + 1 else path.left = path.left + 1 end
+      end
+      any = true
+    end
+  end
+  if any then changed() end
+end
+
+-- ---------------------------------------------------------------------------
+-- The guild window: Info text and message of the day. Read at any time, written only from
+-- a typed command, only in the guild this copy was written for, and only if your rank can.
+-- ---------------------------------------------------------------------------
+
+local GUILD_TEXT = {
+  info = { label = "Guild info", max = 500, want = function() return ns.GUILD_INFO end,
+           get = function() return (C_GuildInfo and C_GuildInfo.GetInfoText) or GetGuildInfoText end,
+           set = function() return (C_GuildInfo and C_GuildInfo.SetInfoText) or SetGuildInfoText end,
+           can = function() return CanEditGuildInfo end },
+  motd = { label = "Message of the day", max = 128, want = function() return ns.GUILD_MOTD end,
+           get = function() return (C_GuildInfo and C_GuildInfo.GetMOTD) or GetGuildRosterMOTD end,
+           set = function() return (C_GuildInfo and C_GuildInfo.SetMOTD) or GuildSetMOTD end,
+           can = function() return CanEditMOTD end },
+}
+
+-- What one of the two says now, what Torchcall would write, and whether you may write it.
+function ns.GuildText(which)
+  local g = GUILD_TEXT[which]
+  if not g then return nil end
+  local now = plain(try(g.get()))
+  local state = { label = g.label, want = g.want(), now = type(now) == "string" and now or nil, max = g.max }
+  state.ours = myGuild() == ns.GUILD_NAME
+  state.can = state.ours and plain(try(g.can())) == true and type(g.set()) == "function"
+  state.same = state.now ~= nil and state.now:gsub("%s+", " ") == state.want:gsub("%s+", " ")
+  state.empty = state.now ~= nil and not state.now:find("%S")
+  return state
+end
+
+function ns.SetGuildText(which)
+  local g, state = GUILD_TEXT[which], ns.GuildText(which)
+  if not state then return false, "Say which: info or motd." end
+  if not myGuild() then return false, "You are not in a guild." end
+  if not state.ours then return false, "These texts were written for <" .. ns.GUILD_NAME .. ">. Edit them in Data.lua for another guild." end
+  if not state.can then return false, "Your guild rank cannot edit the " .. state.label:lower() .. "." end
+  if state.same then return false, "The " .. state.label:lower() .. " already says that." end
+  if #state.want > state.max then return false, "That text is longer than the game allows (" .. state.max .. ")." end
+  local ok, err = pcall(g.set(), state.want)
+  if not ok then
+    ns.Log("guild", err)
+    return false, "The game refused that. Try it from the guild window."
+  end
+  if state.now and not state.empty then TorchcallDB["old" .. which] = state.now:sub(1, 600) end -- so it can be put back by hand
+  return true
 end
 
 -- ---------------------------------------------------------------------------
@@ -919,15 +1281,24 @@ function handlers.CHAT_MSG_SYSTEM(text)
         -- logged off since the search: a waiting player is forgotten and a later search
         -- finds them again; someone already contacted stays on record so they are not asked twice
         if p.status == "new" then db.prospects[p.name] = nil end
+        -- a check-in to someone who is offline never arrived: it can be sent again later
+        if p.checked and time() - p.checked <= 10 then
+          p.checked = nil
+          db.stats.checkins = math.max(0, db.stats.checkins - 1)
+        end
       elseif outcome == "joined" then
         if p.status ~= "joined" then
           db.stats.joined = db.stats.joined + 1
           if p.tpl then ns.TemplateStat(p.tpl, "joined") end
+          if p.path then db.stats[p.path].joined = db.stats[p.path].joined + 1 end
         end
         p.status, p.t = "joined", time()
         ns.Print(p.name .. " joined the guild.")
       elseif outcome == "declined" then
-        if p.status ~= "declined" then db.stats.declined = db.stats.declined + 1 end
+        if p.status ~= "declined" then
+          db.stats.declined = db.stats.declined + 1
+          if p.path then db.stats[p.path].declined = db.stats[p.path].declined + 1 end
+        end
         p.status, p.t = "declined", time()
       else
         p.status, p.t = outcome, time()
@@ -941,20 +1312,32 @@ end
 function handlers.CHAT_MSG_WHISPER(text, sender)
   text, sender = plain(text), plain(sender)
   local p = findProspect(sender)
-  if not p or (p.status ~= "whispered" and p.status ~= "invited") then return end
+  if not p or (p.status ~= "whispered" and p.status ~= "invited" and not (p.status == "joined" and p.checked)) then return end
+  if p.status == "joined" then -- an answer to a check-in: note it, nothing more to send
+    p.said = type(text) == "string" and text:gsub("|", ""):sub(1, 120) or nil
+    changed()
+    return
+  end
   if not p.replied then
     TorchcallDB.stats.replied = TorchcallDB.stats.replied + 1
     if p.tpl then ns.TemplateStat(p.tpl, "replied") end
   end
   p.replied = time()
   p.said = type(text) == "string" and text:gsub("|", ""):sub(1, 120) or nil
-  ns.Print(p.name .. " answered your whisper. They are at the top of the list.")
+  local next = ns.Suggest(p.said)
+  local hint = (next == "invite" and " Sounds like a yes.") or (next == "skip" and " Sounds like a no.")
+    or (next and ns.AnswerTopic(next) and (" They are asking about: " .. ns.AnswerTopic(next).label:lower() .. ".")) or ""
+  ns.Print(p.name .. " answered your whisper. They are at the top of the list." .. hint)
   if TorchcallDB.opts.sound and SOUNDKIT and SOUNDKIT.TELL_MESSAGE then pcall(PlaySound, SOUNDKIT.TELL_MESSAGE) end
   changed()
 end
 
 function handlers.WHO_LIST_UPDATE()
   onWhoResults()
+end
+
+function handlers.GUILD_ROSTER_UPDATE()
+  ns.ReadRoster()
 end
 
 function handlers.PLAYER_LOGIN()
@@ -997,6 +1380,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
 end)
 
 frame:RegisterEvent("ADDON_LOADED")
-for _, event in ipairs({ "PLAYER_LOGIN", "WHO_LIST_UPDATE", "CHAT_MSG_SYSTEM", "CHAT_MSG_WHISPER", "CHAT_MSG_ADDON" }) do
+for _, event in ipairs({ "PLAYER_LOGIN", "WHO_LIST_UPDATE", "CHAT_MSG_SYSTEM", "CHAT_MSG_WHISPER", "CHAT_MSG_ADDON", "GUILD_ROSTER_UPDATE" }) do
   pcall(frame.RegisterEvent, frame, event) -- an event this client lacks must not stop the rest
 end

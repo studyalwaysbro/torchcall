@@ -67,9 +67,40 @@ function M.advance(seconds)
   M.now = target
 end
 
-function GetUnitName(t) if t == "player" then return M.myName end end
-function UnitName(t) if t == "player" then return M.myName end end
-function GetGuildInfo(t) if t == "player" and M.inGuild then return M.myGuild, "Flamewarden", 1 end end
+-- the party or raid: M.group = { { name = , guild = , class = "MAGE", level = 12 }, ... }, M.raid = true for a raid
+-- the guild roster: M.roster = { "Name", ... }
+M.group, M.raid, M.roster = {}, false, {}
+local function member(t)
+  local kind, i = tostring(t):match("^(%a+)(%d+)$")
+  if (kind == "party" and not M.raid) or (kind == "raid" and M.raid) then return M.group[tonumber(i)] end
+end
+function GetUnitName(t) if t == "player" then return M.myName end local m = member(t) return m and m.name end
+function UnitName(t) if t == "player" then return M.myName end local m = member(t) return m and m.name end
+function GetGuildInfo(t)
+  if t == "player" then if M.inGuild then return M.myGuild, "Flamewarden", 1 end return nil end
+  local m = member(t)
+  if m and m.guild == "secret" then return M.secret() end
+  return m and m.guild or nil
+end
+function IsInRaid() return M.raid end
+function GetNumGroupMembers() return #M.group > 0 and #M.group + 1 or 0 end
+function UnitExists(t) return t == "player" or member(t) ~= nil end
+function UnitIsPlayer(t) local m = member(t) return t == "player" or (m ~= nil and not m.npc) end
+function UnitClass(t) local m = member(t) if m then return (m.class or "WARRIOR"):sub(1, 1) .. (m.class or "WARRIOR"):sub(2):lower(), m.class or "WARRIOR" end end
+function UnitLevel(t) local m = member(t) return m and (m.level or 10) end
+function UnitRace(t) local m = member(t) return m and "Orc" end
+function GetNumGuildMembers() return #M.roster end
+-- the guild window's two texts
+M.guildInfo, M.guildMotd, M.canEditInfo, M.canEditMotd = "", "", true, true
+function CanEditGuildInfo() return M.canEditInfo end
+function CanEditMOTD() return M.canEditMotd end
+C_GuildInfoText = {
+  GetInfoText = function() return M.guildInfo end,
+  SetInfoText = function(t) assert(type(t) == "string" and #t <= 500, "guild info too long") if M.guard then M.guard("GUILDTEXT", "info", t) end M.guildInfo = t end,
+  GetMOTD = function() return M.guildMotd end,
+  SetMOTD = function(t) assert(type(t) == "string" and #t <= 128, "motd too long") if M.guard then M.guard("GUILDTEXT", "motd", t) end M.guildMotd = t end,
+}
+function GetGuildRosterInfo(i) if M.rosterHidden then return M.secret() end return M.roster[i] end
 function IsInGuild() return M.inGuild end
 function CanGuildInvite() return M.canInvite end
 
@@ -89,6 +120,7 @@ C_GuildInfo = { Invite = function(name)
   if M.guard then M.guard("INVITE", name) end
   M.invited[#M.invited + 1] = name
 end }
+for k, v in pairs(C_GuildInfoText) do C_GuildInfo[k] = v end
 local function freshFriendList() return {
   SetWhoToUi = function(on) M.whoToUi = on end,
   SendWho = function(text, origin)
@@ -132,7 +164,8 @@ local function setText(f, t) assert(type(t) == "string" or type(t) == "number", 
 local function getText(f) return f.__text end
 local EXTRA = {
   Frame = {},
-  Button = { SetText = setText, GetText = getText, RegisterForClicks = noop, LockHighlight = noop, UnlockHighlight = noop, SetHighlightTexture = noop },
+  Button = { SetText = setText, GetText = getText, RegisterForClicks = noop, LockHighlight = function(f) f.__lit = true end, UnlockHighlight = function(f) f.__lit = false end, SetHighlightTexture = noop,
+             Enable = function(f) f.__off = false end, Disable = function(f) f.__off = true end, IsEnabled = function(f) return not f.__off end },
   EditBox = { SetText = setText, GetText = getText, SetAutoFocus = noop, SetMaxLetters = noop, HasFocus = function() return false end, ClearFocus = noop },
   GameTooltip = { SetOwner = noop, Show = REGION.Show, AddLine = function(f, text) assert(type(text) == "string") f.__lines[#f.__lines + 1] = text end },
   FontString = { SetText = setText, GetText = getText, SetJustifyH = noop, SetJustifyV = noop, SetWordWrap = noop },
@@ -172,7 +205,10 @@ end
 function M.click(label, button)
   for _, f in ipairs(M.frames) do
     local text = type(f.__text) == "string" and f.__text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
-    if f.__kind == "Button" and text and text:sub(1, #label) == label and f.__scripts.OnClick then
+    -- a hidden or disabled button cannot be pressed, and neither can one inside a hidden panel
+    local visible, up = not f.__off, f
+    while visible and up do visible = up.__shown ~= false up = up.__parent end
+    if visible and f.__kind == "Button" and text and text:sub(1, #label) == label and f.__scripts.OnClick then
       f.__scripts.OnClick(f, button or "LeftButton")
       return true
     end
@@ -186,6 +222,7 @@ function M.reset(wipe)
   M.frames, M.timers = {}, {}
   M.sentAddon, M.sentChat, M.sentWho, M.invited, M.printed = {}, {}, {}, {}, {}
   M.lockdown, M.inGuild, M.canInvite, M.addonResult = false, true, true, 0
+  M.group, M.raid, M.roster, M.rosterHidden = {}, false, {}, nil
   M.chatError, M.whoError, M.inviteError, M.who, M.whoTotal, M.whoToUi = nil, nil, nil, {}, nil, false
   UIParent = M.newFrame("Frame", "UIParent")
   Minimap = M.newFrame("Frame", "Minimap")

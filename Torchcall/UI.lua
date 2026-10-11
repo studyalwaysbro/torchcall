@@ -20,6 +20,22 @@ local opts
 local main, minimapButton
 local currentTab, offset = 1, 0
 local zoneOnly = false
+local talkingTo            -- the player the conversation panel is open on
+local lineAt = 1           -- which line the Answers tab is editing
+
+-- Everything the Answers tab can edit: the answers, then the two lines sent at other moments.
+local function editableLines()
+  local list = {}
+  for _, a in ipairs(ns.ANSWERS) do
+    if a.text then list[#list + 1] = { label = "Answer: " .. a.label, get = function() return TorchcallDB.answers[a.key] end,
+                                       set = function(v) TorchcallDB.answers[a.key] = v end, original = a.text } end
+  end
+  list[#list + 1] = { label = "Opener for someone you just played with", get = function() return TorchcallDB.groupmsg end,
+                      set = function(v) TorchcallDB.groupmsg = v end, original = ns.GROUP_TEMPLATE }
+  list[#list + 1] = { label = "Check-in, a few days after they join", get = function() return TorchcallDB.checkin end,
+                      set = function(v) TorchcallDB.checkin = v end, original = ns.CHECKIN }
+  return list
+end
 
 local function classColored(name, class)
   local c = class and RAID_CLASS_COLORS and RAID_CLASS_COLORS[class]
@@ -141,7 +157,10 @@ local function buildRow(list, r)
   row.whisper:SetPoint("RIGHT", row.invite, "LEFT", -3, 0)
   row.whisper:SetScript("OnClick", function()
     if not row.name then return end
-    if row.welcome then act(ns.Welcome, row.name) else act(ns.Whisper, row.name, row.followup) end
+    if row.action == "welcome" then act(ns.Welcome, row.name)
+    elseif row.action == "checkin" then act(ns.CheckIn, row.name)
+    elseif row.action == "talk" then talkingTo = row.name UI.Refresh()
+    else act(ns.Whisper, row.name) end
   end)
   row:SetScript("OnEnter", function(self)
     local p = self.name and TorchcallDB.prospects[self.name]
@@ -149,8 +168,10 @@ local function buildRow(list, r)
     showTooltip(self, p.name,
       p.race and (p.race .. " " .. (p.classStr or "")) or p.classStr,
       p.zone and ("Seen in " .. p.zone .. ", " .. ago(p.seen) .. " ago") or nil,
+      p.ran and "You played with them. They get the line written for that." or nil,
       p.by and ("Contacted by " .. p.by) or nil,
-      p.said and ('They said: "' .. p.said .. '"') or nil)
+      p.said and ('They said: "' .. p.said .. '"') or nil,
+      p.stayed == true and "Still in the guild a week on." or (p.stayed == false and "Left the guild within a week.") or nil)
   end)
   row:SetScript("OnLeave", function() GameTooltip:Hide() end)
   return row
@@ -233,6 +254,134 @@ local function buildMessagePanel(f)
     opts.template = 1
     UI.Refresh()
   end)
+  panel.rotate = makeButton(panel, "", 220)
+  panel.rotate:SetPoint("LEFT", restore, "RIGHT", 8, 0)
+  panel.rotate:SetScript("OnClick", function() opts.rotate = not opts.rotate; UI.Refresh() end)
+  panel.rotate:SetScript("OnEnter", function(self)
+    showTooltip(self, "Try every opener",
+      "On: each opening whisper gets about twenty sends, then the one that gets the most answers is used most. One send in five still goes to the least tried.",
+      "Off: every whisper uses the opener showing above.",
+      "Someone you added from your own group always gets the line written for that, on the Answers tab.")
+  end)
+  panel.rotate:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  return panel
+end
+
+-- The Answers tab: every line sent after the opener, one at a time, and what is working.
+local function buildAnswersPanel(f)
+  local panel = CreateFrame("Frame", nil, f)
+  panel:SetPoint("TOPLEFT", 16, -162)
+  panel:SetPoint("BOTTOMRIGHT", -16, 48)
+  panel.title = makeLabel(panel, "GameFontNormal")
+  panel.title:SetPoint("TOPLEFT", 0, 0)
+  local prev = makeButton(panel, "<", 26)
+  prev:SetPoint("TOPRIGHT", -30, 4)
+  local nextB = makeButton(panel, ">", 26)
+  nextB:SetPoint("LEFT", prev, "RIGHT", 4, 0)
+  local function step(by)
+    panel.edit:ClearFocus()
+    lineAt = (lineAt - 1 + by) % #editableLines() + 1
+    UI.Refresh()
+  end
+  prev:SetScript("OnClick", function() step(-1) end)
+  nextB:SetScript("OnClick", function() step(1) end)
+  panel.edit = makeEdit(panel, 640, 255)
+  panel.edit:SetPoint("TOPLEFT", 6, -24)
+  panel.edit:SetScript("OnTextChanged", function(self, userInput)
+    if not userInput then return end
+    local line = editableLines()[lineAt]
+    if line then line.set(self:GetText() or "") end
+    UI.RefreshAnswers()
+  end)
+  panel.count = makeLabel(panel, "GameFontDisableSmall")
+  panel.count:SetPoint("TOPLEFT", 0, -50)
+  panel.preview = makeLabel(panel, "GameFontHighlight")
+  panel.preview:SetPoint("TOPLEFT", 0, -68)
+  panel.preview:SetPoint("TOPRIGHT", 0, -68)
+  panel.preview:SetHeight(44)
+  panel.preview:SetJustifyH("LEFT")
+  panel.preview:SetJustifyV("TOP")
+  panel.preview:SetWordWrap(true)
+  local reset = makeButton(panel, "Put this line back", 150)
+  reset:SetPoint("TOPLEFT", 0, -116)
+  reset:SetScript("OnClick", function()
+    local line = editableLines()[lineAt]
+    if line then line.set(line.original) end
+    panel.edit:ClearFocus()
+    UI.Refresh()
+  end)
+  local how = makeLabel(panel, "GameFontDisableSmall",
+    "Answers go only to someone who wrote back to you: press Reply on their row. One press sends one, and each goes to a player once.")
+  how:SetPoint("LEFT", reset, "RIGHT", 10, 0)
+  how:SetPoint("RIGHT", panel, "RIGHT", 0, 0)
+  how:SetJustifyH("LEFT")
+  how:SetWordWrap(true)
+
+  local workingLabel = makeLabel(panel, "GameFontNormal", "What is working")
+  workingLabel:SetPoint("TOPLEFT", 0, -152)
+  panel.funnel = makeLabel(panel, "GameFontHighlightSmall")
+  panel.funnel:SetPoint("TOPLEFT", 0, -172)
+  panel.funnel:SetPoint("TOPRIGHT", 0, -172)
+  panel.funnel:SetHeight(110)
+  panel.funnel:SetJustifyH("LEFT")
+  panel.funnel:SetJustifyV("TOP")
+  panel.funnel:SetWordWrap(true)
+  return panel
+end
+
+-- The conversation panel, beside the window: what they wrote, and one button per answer.
+local function buildTalkPanel(f)
+  local panel = CreateFrame("Frame", nil, f, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  panel:SetSize(230, 430)
+  panel:SetPoint("TOPLEFT", f, "TOPRIGHT", 2, -24)
+  if panel.SetBackdrop then
+    panel:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+                        edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 16,
+                        insets = { left = 4, right = 4, top = 4, bottom = 4 } })
+  end
+  panel:EnableMouse(true)
+  panel.title = makeLabel(panel, "GameFontNormal")
+  panel.title:SetPoint("TOPLEFT", 12, -12)
+  panel.said = makeLabel(panel, "GameFontHighlightSmall")
+  panel.said:SetPoint("TOPLEFT", 12, -32)
+  panel.said:SetWidth(206)
+  panel.said:SetHeight(46)
+  panel.said:SetJustifyH("LEFT")
+  panel.said:SetJustifyV("TOP")
+  panel.said:SetWordWrap(true)
+  panel.hint = makeLabel(panel, "GameFontNormalSmall")
+  panel.hint:SetPoint("TOPLEFT", 12, -82)
+  panel.hint:SetWidth(206)
+  panel.hint:SetJustifyH("LEFT")
+  panel.topics = {}
+  for i, a in ipairs(ns.ANSWERS) do
+    local b = makeButton(panel, a.label, 206, 22)
+    b:SetPoint("TOPLEFT", 12, -100 - (i - 1) * 25)
+    b.key = a.key
+    b:SetScript("OnClick", function() if talkingTo then act(ns.Answer, talkingTo, a.key) end end)
+    b:SetScript("OnEnter", function(self)
+      local p = talkingTo and TorchcallDB.prospects[talkingTo]
+      local text = a.key == "discord" and TorchcallDB.reply or TorchcallDB.answers[a.key]
+      if p and text then showTooltip(self, a.label, ns.Render(text, p), "One whisper. This answer goes to a player once.") end
+    end)
+    b:SetScript("OnLeave", function() GameTooltip:Hide() end)
+    panel.topics[i] = b
+  end
+  local y = -100 - #ns.ANSWERS * 25 - 8
+  panel.invite = makeButton(panel, "Send the guild invite", 206, 24)
+  panel.invite:SetPoint("TOPLEFT", 12, y)
+  panel.invite:SetScript("OnClick", function() if talkingTo then act(ns.Invite, talkingTo) end end)
+  panel.skip = makeButton(panel, "They said no", 100, 22)
+  panel.skip:SetPoint("TOPLEFT", 12, y - 28)
+  panel.skip:SetScript("OnClick", function()
+    if talkingTo then act(ns.Skip, talkingTo) end
+    talkingTo = nil
+    UI.Refresh()
+  end)
+  panel.close = makeButton(panel, "Close", 100, 22)
+  panel.close:SetPoint("LEFT", panel.skip, "RIGHT", 6, 0)
+  panel.close:SetScript("OnClick", function() talkingTo = nil; UI.Refresh() end)
+  panel:Hide()
   return panel
 end
 
@@ -341,7 +490,7 @@ local function buildMain()
   f.note:SetWordWrap(false)
 
   f.tabs = {}
-  for i, label in ipairs({ "Prospects", "Contacted", "Message" }) do
+  for i, label in ipairs({ "Prospects", "Contacted", "Message", "Answers" }) do
     local b = makeButton(f, label, 120)
     b:SetPoint("TOPLEFT", 14 + (i - 1) * 124, -132)
     b:SetScript("OnClick", function()
@@ -350,6 +499,16 @@ local function buildMain()
     end)
     f.tabs[i] = b
   end
+  f.group = makeButton(f, "Add my group", 150)
+  f.group:SetPoint("TOPRIGHT", -16, -132)
+  f.group:SetScript("OnClick", function() act(ns.AddGroup) end)
+  f.group:SetScript("OnEnter", function(self)
+    showTooltip(self, "Add my group",
+      "Puts everyone in your party or raid who has no guild on the list, at the top.",
+      "Someone you have just played with is far more likely to say yes than a stranger, and they get their own opening line.",
+      "Adding them contacts nobody. You still press Whisper or Invite for each one.")
+  end)
+  f.group:SetScript("OnLeave", function() GameTooltip:Hide() end)
 
   local list = CreateFrame("Frame", nil, f)
   list:SetPoint("TOPLEFT", 16, -162)
@@ -383,6 +542,8 @@ local function buildMain()
   f.count:SetPoint("TOPRIGHT", list, "BOTTOMRIGHT", 0, -2)
 
   f.message = buildMessagePanel(f)
+  f.answers = buildAnswersPanel(f)
+  f.talk = buildTalkPanel(f)
 
   f.next = makeButton(f, "", 330, 26)
   f.next:SetPoint("BOTTOMLEFT", 14, 14)
@@ -434,6 +595,72 @@ function UI.RefreshMessage()
   panel.welcomeCount:SetText(("%s%d of 255 characters|r"):format(welcomeLength > 255 and "|cffff4040" or GREY, welcomeLength))
 end
 
+function UI.RefreshAnswers()
+  if not main then return end
+  local panel, lines = main.answers, editableLines()
+  lineAt = math.max(1, math.min(lineAt, #lines))
+  local line = lines[lineAt]
+  panel.title:SetText(("%s  %s(%d of %d)|r"):format(line.label, GREY, lineAt, #lines))
+  local sample = (talkingTo and TorchcallDB.prospects[talkingTo]) or ns.NextTarget()
+    or { name = "Thrall Doomhammer", level = 12, classStr = "Shaman", zone = "The Barrens" }
+  local rendered = ns.Render(line.get() or "", sample)
+  panel.preview:SetText(rendered)
+  local over = #rendered > 255
+  panel.count:SetText(("%s%d of 255 characters with %s's name in it%s|r"):format(over and "|cffff4040" or GREY,
+    #rendered, sample.name, over and ". Too long, the game will not send it." or ""))
+
+  local f = ns.Funnel()
+  local function pct(v) return v and (v .. "%") or "no data" end
+  local function kept(path)
+    local n = path.stayed + path.left
+    return n > 0 and (", %d of %d still here a week later"):format(path.stayed, n) or ""
+  end
+  local out = {
+    ("%sWhispers|r  %d sent, %d answered (%s)"):format(GOLD, f.whispered, f.replied, pct(f.replyRate)),
+    ("%sInvites after a conversation|r  %d sent, %d joined (%s)%s"):format(GOLD, f.warm.invited, f.warm.joined, pct(f.warm.rate), kept(f.warm)),
+    ("%sInvites with no conversation|r  %d sent, %d joined (%s)%s"):format(GOLD, f.cold.invited, f.cold.joined, pct(f.cold.rate), kept(f.cold)),
+    ("%sAnswers sent|r %d    %sCheck-ins sent|r %d"):format(GOLD, TorchcallDB.stats.answers, GOLD, TorchcallDB.stats.checkins),
+    "",
+    f.advice,
+  }
+  panel.funnel:SetText(table.concat(out, "\n"))
+end
+
+local function refreshTalk()
+  local panel = main.talk
+  local p = talkingTo and TorchcallDB.prospects[talkingTo]
+  local left = p and ns.AnswersLeft(p.name) or {}
+  if not p or not p.replied or (p.status ~= "whispered" and p.status ~= "invited" and p.status ~= "joined") then
+    talkingTo = nil
+    panel:Hide()
+    return
+  end
+  local open = {}
+  for _, key in ipairs(left) do open[key] = true end
+  panel.title:SetText(classColored(p.name, p.class))
+  panel.said:SetText(p.said and ('"' .. p.said .. '"') or (GREY .. "They wrote back.|r"))
+  local suggestion = ns.Suggest(p.said)
+  if suggestion == "invite" then panel.hint:SetText(GREEN .. "Sounds like a yes.|r")
+  elseif suggestion == "skip" then panel.hint:SetText(ORANGE .. "Sounds like a no. Leave it there.|r")
+  elseif suggestion and open[suggestion] then panel.hint:SetText(GOLD .. "Suggested: " .. ns.AnswerTopic(suggestion).label .. "|r")
+  elseif #left == 0 then panel.hint:SetText(GREY .. "That is enough from the addon. Type to them.|r")
+  else panel.hint:SetText(GREY .. "Pick what answers them.|r") end
+  for _, b in ipairs(panel.topics) do
+    if open[b.key] then b:Enable() else b:Disable() end
+    if suggestion == b.key and open[b.key] then b:LockHighlight() else b:UnlockHighlight() end
+  end
+  if ns.CanInvite() and p.status == "whispered" then
+    panel.invite:Enable()
+    if suggestion == "invite" then panel.invite:LockHighlight() else panel.invite:UnlockHighlight() end
+  else
+    panel.invite:Disable()
+    panel.invite:UnlockHighlight()
+  end
+  panel.invite:SetText(p.status == "whispered" and "Send the guild invite" or (p.status == "joined" and "Joined" or "Invited"))
+  if p.status == "whispered" then panel.skip:Show() else panel.skip:Hide() end
+  panel:Show()
+end
+
 function UI.Refresh()
   if not main or not main:IsShown() then return end
   local db, c = TorchcallDB, ns.Counts()
@@ -467,8 +694,13 @@ function UI.Refresh()
   for i, b in ipairs(main.tabs) do
     if i == currentTab then b:LockHighlight() else b:UnlockHighlight() end
   end
-  local messageTab = currentTab == 3
-  if messageTab then main.list:Hide(); main.message:Show() else main.message:Hide(); main.list:Show() end
+  local due = #ns.DueCheckIns()
+  main.tabs[2]:SetText(due > 0 and ("Contacted " .. ORANGE .. "(" .. due .. " due)|r") or "Contacted")
+  local messageTab, answersTab = currentTab == 3, currentTab == 4
+  if messageTab then main.message:Show() else main.message:Hide() end
+  if answersTab then main.answers:Show() else main.answers:Hide() end
+  if messageTab or answersTab then main.list:Hide() else main.list:Show() end
+  refreshTalk()
 
   local canInvite = ns.CanInvite()
   if messageTab then
@@ -476,7 +708,13 @@ function UI.Refresh()
     if not main.message.edit:HasFocus() then main.message.edit:SetText(db.templates[opts.template] or "") end
     if not main.message.reply:HasFocus() then main.message.reply:SetText(db.reply or "") end
     if not main.message.welcome:HasFocus() then main.message.welcome:SetText(db.welcome or "") end
+    main.message.rotate:SetText(opts.rotate and "Trying every opener: on" or "Trying every opener: off")
     UI.RefreshMessage()
+  elseif answersTab then
+    main.count:SetText("")
+    local line = editableLines()[math.max(1, math.min(lineAt, #editableLines()))]
+    if not main.answers.edit:HasFocus() then main.answers.edit:SetText(line.get() or "") end
+    UI.RefreshAnswers()
   else
     local rows, hidden = ns.List(currentTab == 1 and "new" or "contacted")
     offset = math.max(0, math.min(offset, math.max(0, #rows - ROWS)))
@@ -484,7 +722,6 @@ function UI.Refresh()
       local row, p = main.rows[r], rows[r + offset]
       if p then
         row.name = p.name
-        row.followup = p.status ~= "new"
         local answered = ns.Answered(p)
         row.cells[1]:SetText(classColored(p.name, p.class))
         row.cells[2]:SetText(p.level and p.level > 0 and tostring(p.level) or "")
@@ -492,11 +729,18 @@ function UI.Refresh()
         row.cells[4]:SetText(p.zone or "")
         local status = STATUS_LABEL[p.status] or p.status
         if answered then status = ORANGE .. "ANSWERED|r" end
+        if p.status == "new" and p.ran then status = GREEN .. "played with|r" end
+        if p.stayed == false then status = GREY .. "joined, then left|r" end
         row.cells[5]:SetText(status .. GREY .. " " .. ago(p.status == "new" and p.seen or p.t) .. "|r")
-        row.welcome = p.status == "joined"
-        row.whisper:SetText(row.welcome and "Welcome" or (row.followup and "Link" or "Whisper"))
-        -- the follow-up goes once, and only to someone who wrote back; so does the welcome
-        if p.status == "new" or (answered and not p.linked) or (row.welcome and not p.welcomed and canInvite) then
+        -- one button per row, for the one thing worth doing next with this player
+        local talking = p.replied and (p.status == "whispered" or p.status == "invited" or p.status == "joined")
+        if p.status == "new" then row.action = "whisper"
+        elseif p.status == "joined" and not p.welcomed and canInvite then row.action = "welcome"
+        elseif ns.CheckInDue(p) then row.action = "checkin"
+        elseif talking and #ns.AnswersLeft(p.name) > 0 then row.action = "talk"
+        else row.action = nil end
+        if row.action then
+          row.whisper:SetText(({ whisper = "Whisper", welcome = "Welcome", checkin = "Check in", talk = "Reply" })[row.action])
           row.whisper:Show()
         else
           row.whisper:Hide()
@@ -568,6 +812,8 @@ local function tooltipSummary(tt)
   tt:AddLine("Torchcall")
   tt:AddLine(("%d waiting, %d answered"):format(c.new, c.replied), 1, 1, 1)
   tt:AddLine(("%d whispered, %d invited, %d joined"):format(s.whispered, s.invited, s.joined), 1, 1, 1)
+  local due = #ns.DueCheckIns()
+  if due > 0 then tt:AddLine(("%d recruit%s due a check-in"):format(due, due == 1 and "" or "s"), 1, 0.5, 0.04) end
   tt:AddLine("Click to open. Drag to move.", 0.6, 0.6, 0.6)
 end
 
@@ -634,7 +880,12 @@ local function printHelp()
   print("  /torchcall search          send the next queued search")
   print("  /torchcall class mage priest     only these classes (class all to clear)    /torchcall level 20-40")
   print("  /torchcall next            whisper or invite the next player on the list")
-  print("  /torchcall stats           your totals")
+  print("  /torchcall group           add everyone in your party or raid who has no guild")
+  print("  /torchcall answer <topic> <name>   one answer to someone who wrote back (topics: /torchcall answer)")
+  print("  /torchcall checkin <name>  a how-is-it-going whisper to a recruit who joined a few days ago (no name: who is due)")
+  print("  /torchcall rotate          try every opener and lean on the best, on or off")
+  print("  /torchcall stats           your totals and what is working")
+  print("  /torchcall guild           the guild window's Info text and message of the day, and what Torchcall would put there")
   print("  /torchcall skip <name>     never contact this player    /torchcall forget <name>   drop them from the list")
   print("  /torchcall cap <number>    new people you may contact per hour (now " .. opts.hourly .. ", and " .. opts.daily .. " a day)")
   print("  /torchcall clear           empty the waiting list    /torchcall minimap   show or hide the button")
@@ -668,6 +919,60 @@ local function slash(input)
     local c, s = ns.Counts(), db.stats
     ns.Print(("%d waiting, %d answered. All time: %d found, %d whispered, %d invited, %d joined, %d declined.")
       :format(c.new, c.replied, s.found, s.whispered, s.invited, s.joined, s.declined))
+    local f = ns.Funnel()
+    local function line(label, path)
+      local n = path.stayed + path.left
+      print(("  %s: %d sent, %d joined%s%s"):format(label, path.invited, path.joined, path.rate and (" (" .. path.rate .. "%)") or "",
+        n > 0 and (", %d of %d still here a week later"):format(path.stayed, n) or ""))
+    end
+    print(("  Whispers: %d sent, %d answered%s"):format(f.whispered, f.replied, f.replyRate and (" (" .. f.replyRate .. "%)") or ""))
+    line("Invites after a conversation", f.warm)
+    line("Invites with no conversation", f.cold)
+    print("  " .. f.advice)
+  elseif cmd == "group" then
+    act(ns.AddGroup)
+  elseif cmd == "guild" then
+    local which = rest:lower()
+    if which == "info" or which == "motd" then
+      local state = ns.GuildText(which)
+      if act(ns.SetGuildText, which) then
+        ns.Print(state.label .. " written." .. (state.now and not state.empty and " What was there before is kept in the saved file." or ""))
+      end
+    else
+      for _, key in ipairs({ "info", "motd" }) do
+        local state = ns.GuildText(key)
+        ns.Print(state.label .. (state.same and ": already set." or (state.can and (": /torchcall guild " .. key .. " writes this:") or ": your rank cannot edit it. It would say:")))
+        if not state.same then
+          for line in state.want:gmatch("[^\n]+") do print("    " .. line) end
+          print("  Now: " .. ((state.now == nil and "could not be read") or (state.empty and "empty") or state.now:gsub("\n", " / ")))
+        end
+      end
+    end
+  elseif cmd == "rotate" then
+    opts.rotate = not opts.rotate
+    ns.Print(opts.rotate and "Trying every opener, then leaning on the one that gets answers." or "Every whisper now uses the opener showing on the Message tab.")
+    UI.Refresh()
+  elseif cmd == "answer" then
+    local key, who = rest:match("^(%S+)%s+(.+)$")
+    local p = who and ns.FindProspect(who)
+    if not key or not ns.AnswerTopic(key:lower()) then
+      local keys = {}
+      for _, a in ipairs(ns.ANSWERS) do keys[#keys + 1] = a.key end
+      ns.Print("Topics: " .. table.concat(keys, ", ") .. ". Example: /torchcall answer raids Bob Smith")
+    elseif not p then
+      ns.Print("Nobody called '" .. who .. "' is on the list. Names are case sensitive.")
+    else
+      act(ns.Answer, p.name, key:lower())
+    end
+  elseif cmd == "checkin" then
+    local p = rest ~= "" and ns.FindProspect(rest)
+    if p then
+      act(ns.CheckIn, p.name)
+    else
+      local due, names = ns.DueCheckIns(), {}
+      for _, d in ipairs(due) do names[#names + 1] = d.name end
+      ns.Print(#due > 0 and ("Due a check-in: " .. table.concat(names, ", ") .. ".") or "Nobody is due a check-in.")
+    end
   elseif cmd == "class" or cmd == "classes" then
     if rest == "" or rest:lower() == "all" or rest:lower() == "any" then
       ns.ToggleClass(nil)
@@ -766,4 +1071,19 @@ function UI.Init()
   end
   local ok, err = pcall(buildMinimapButton)
   if not ok then ns.Log("error", "minimap: " .. tostring(err)) end
+  -- a reminder is only a line of text: nothing is sent to anyone
+  if C_Timer and C_Timer.After then
+    C_Timer.After(20, function()
+      local due = TorchcallDB and #ns.DueCheckIns() or 0
+      if due > 0 then
+        ns.Print(("%d recruit%s joined a few days ago. A quick check-in is what keeps them: open the Contacted tab."):format(due, due == 1 and "" or "s"))
+      end
+      for _, key in ipairs({ "info", "motd" }) do
+        local state = TorchcallDB and ns.GuildText(key)
+        if state and state.can and state.empty then
+          ns.Print("Your " .. state.label:lower() .. " is empty. /torchcall guild shows what it could say, with the Discord and the site.")
+        end
+      end
+    end)
+  end
 end

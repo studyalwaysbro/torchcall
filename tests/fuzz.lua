@@ -10,6 +10,10 @@
 --     or the follow-up without having answered; nobody is welcomed twice or before joining
 --   * the hourly and daily limits, the whisper gap and the who gap always hold
 --   * the Next button only reaches players who pass the level, class and alphabet filters
+--   * an answer only ever goes to someone who wrote back, each topic once, five at most;
+--     a check-in only to a recruit who joined at least two days ago, once; the line for
+--     people you played with only to someone who really was in your group
+--   * reading the guild roster or adding your group never sends anything to anyone
 --   * no handler ever raises an error, and the saved data stays plain and bounded
 package.path = "tests/?.lua;" .. package.path
 local M = require("mock")
@@ -34,13 +38,15 @@ local NONLATIN = { ["\208\152\208\178\208\176\208\189"] = true, ["\236\157\180\2
 local theirs = 0
 local world = {} -- [name] = what the game last said about that player in an answer to one of our searches
 local ns, db
-local totals = { steps = 0, whispers = 0, followups = 0, invites = 0, welcomes = 0, searches = 0, relogs = 0, wipes = 0, blocked = 0 }
+local totals = { steps = 0, whispers = 0, followups = 0, invites = 0, welcomes = 0, searches = 0, relogs = 0, wipes = 0, blocked = 0,
+                 answers = 0, checkins = 0, groupOpeners = 0 }
+local TOPICS = { "about", "story", "life", "raids", "pvp", "leveling", "new", "run" }
 
 -- records kept outside the addon ------------------------------------------------
 local rec
 local function freshRecords()
   rec = { opened = {}, invited = {}, linked = {}, welcomed = {}, replied = {}, joined = {}, contacts = {},
-          lastWhisper = -1e9, lastWho = -1e9 }
+          answered = {}, joinedAt = {}, checked = {}, grouped = {}, lastWhisper = -1e9, lastWho = -1e9 }
 end
 freshRecords()
 
@@ -64,6 +70,11 @@ M.guard = function(kind, target, msg)
     totals.searches = totals.searches + 1
     return
   end
+  if kind == "GUILDTEXT" then -- the guild window's own text: only ever from a typed command, only with the rank
+    if not M.inGuild then fail("guild text written with no guild") end
+    if (target == "info" and not M.canEditInfo) or (target == "motd" and not M.canEditMotd) then fail("guild text written without the rank") end
+    return
+  end
   if M.lockdown and kind ~= "INVITE" then fail("chat sent during a lockdown") end
   local p = db.prospects[target]
   if type(target) == "string" and target:find("^Theirs ") then fail("reached someone from a who search that was not ours: " .. target) end
@@ -77,7 +88,7 @@ M.guard = function(kind, target, msg)
     if #rec.contacts >= o.daily then fail("daily limit exceeded") end
     if not p or p.status ~= "new" then fail("first contact with someone not waiting: " .. tostring(target)) end
     if now - (p.seen or 0) > 12 * 3600 then fail("first contact with someone last seen over 12 hours ago") end
-    if viaNext then
+    if viaNext and not rec.grouped[target] then -- someone from your own group is exempt from the filters, by design
       -- judged from what the game last said about this player and the filters as set, not by asking the addon
       local raw = world[target]
       if not raw then fail("Next reached someone no search of ours ever returned: " .. target) end
@@ -99,12 +110,34 @@ M.guard = function(kind, target, msg)
   if kind == "WHISPER" then
     if time() - rec.lastWhisper < o.gap then fail("whispers closer than the gap") end
     rec.lastWhisper = time()
-    if msg:find("discord.gg", 1, true) then
+    local topic = msg:match("^ANS:(%a+)")
+    if topic then
+      if not rec.replied[target] then fail("answer to someone who never wrote back: " .. target) end
+      if not (rec.opened[target] or rec.invited[target]) then fail("answer to someone never contacted: " .. target) end
+      local had = rec.answered[target] or {}
+      if had[topic] then fail("answer '" .. topic .. "' sent twice to " .. target) end
+      local count = rec.linked[target] and 1 or 0
+      for _ in pairs(had) do count = count + 1 end
+      if count >= 5 then fail("more than five answers to " .. target) end
+      had[topic] = true
+      rec.answered[target] = had
+      totals.answers = totals.answers + 1
+    elseif msg:find("^CHECKIN") then
+      if not rec.joinedAt[target] then fail("check-in to someone who never joined: " .. target) end
+      if time() - rec.joinedAt[target] < 2 * 86400 then fail("check-in less than two days after joining: " .. target) end
+      if rec.checked[target] then fail("check-in sent twice to " .. target) end
+      rec.checked[target] = time()
+      totals.checkins = totals.checkins + 1
+    elseif msg:find("discord.gg", 1, true) then
       if not rec.replied[target] then fail("follow-up to someone who never answered: " .. target) end
       if rec.linked[target] then fail("follow-up sent twice to " .. target) end
       rec.linked[target] = true
       totals.followups = totals.followups + 1
     else
+      if msg:find("^GROUP") then
+        if not rec.grouped[target] then fail("played-together line to someone never in your group: " .. target) end
+        totals.groupOpeners = totals.groupOpeners + 1
+      end
       if rec.opened[target] then fail("opening whisper sent twice to " .. target) end
       if not rec.invited[target] then firstContact() elseif not p or p.status ~= "new" then fail("whisper after an invite") end
       rec.opened[target] = true
@@ -167,6 +200,9 @@ local function login(wipe)
   M.fire("ADDON_LOADED", "Torchcall")
   M.fire("PLAYER_LOGIN")
   db = TorchcallDB
+  -- lines the guard can tell apart from an opener
+  for _, key in ipairs(TOPICS) do db.answers[key] = "ANS:" .. key .. " for {name}" end
+  db.checkin, db.groupmsg = "CHECKIN {name}", "GROUP {name}"
   if wipe then M.advance(30) end -- fresh data has no memory of the last whisper; a real wipe is never that fast
   totals.relogs = totals.relogs + 1
 end
@@ -195,7 +231,7 @@ end
 
 local SLASH = { "", "help", "stats", "search", "search 1-60", "search 10-20", "search 60", "next", "cap 5", "cap 30", "cap 60", "cap 9999",
                 "class mage", "class all", "class warrior priest rogue", "level 1-60", "level 20-40", "level 60-1", "clear", "minimap", "log",
-                "skip", "forget", "welcome", "bogus" }
+                "skip", "forget", "welcome", "bogus", "group", "rotate", "answer", "answer raids", "answer bogus", "answer discord", "checkin", "guild", "guild info", "guild motd", "guild zz" }
 
 local STEP = {
   function() M.advance(R() * 8) end,
@@ -265,9 +301,42 @@ local STEP = {
     local name = chance(0.6) and knownName("invited") or knownName()
     local line = pick({ "%s has joined the guild.", "%s has joined the guild.", "%s declines your guild invitation.", "%s is already in a guild.",
                         "No player named '%s' is currently playing.", "%s is ignoring you.", "%s has gone offline.", "%s" })
-    if line == "%s has joined the guild." and db.prospects[name] then rec.joined[name] = true end
-    M.fire("CHAT_MSG_SYSTEM", chance(0.03) and M.secret() or line:format(chance(0.2) and ("|Hplayer:" .. name .. "|h[" .. name .. "]|h") or name))
+    local hidden = chance(0.03)
+    if line == "%s has joined the guild." and db.prospects[name] then
+      rec.joined[name] = true
+      if not hidden then rec.joinedAt[name] = time() end
+    end
+    -- a check-in that reached nobody may be sent again
+    if not hidden and line:find("No player named", 1, true) and rec.checked[name] and time() - rec.checked[name] <= 10 then rec.checked[name] = nil end
+    M.fire("CHAT_MSG_SYSTEM", hidden and M.secret() or line:format(chance(0.2) and ("|Hplayer:" .. name .. "|h[" .. name .. "]|h") or name))
   end,
+  function() press(ns.Answer, contactedName(), pick(TOPICS)) end,
+  function() press(ns.Answer, contactedName(), pick(TOPICS)) end,
+  function() press(ns.Answer, knownName(), pick({ "discord", "bogus", "raids", 7 })) end,
+  function() press(ns.CheckIn, knownName("joined")) end,
+  function() press(ns.CheckIn, knownName()) end,
+  function() if chance(0.1) then M.advance(3 * 86400) end end,
+  function() -- you are in a group, or a raid, or neither
+    M.group, M.raid = {}, chance(0.2)
+    for i = 1, pick({ 0, 0, 1, 4, 4, 12 }) do
+      local guild = pick({ false, false, false, "Some Guild", "secret" })
+      local m = { name = chance(0.5) and knownName() or randomName(), guild = guild or nil, class = pick(CLASSES), level = R(1, 60), npc = chance(0.05) or nil }
+      M.group[i] = m
+      if not guild and not m.npc and (M.raid or i <= 4) then rec.grouped[m.name] = true end
+    end
+  end,
+  function() press(ns.AddGroup) end,
+  function() -- the guild roster arrives: reading it must never send anything
+    M.roster, M.rosterHidden = { M.myName }, chance(0.05) or nil
+    for name in pairs(rec.joined) do if chance(0.6) then M.roster[#M.roster + 1] = name end end
+    M.fire("GUILD_ROSTER_UPDATE")
+  end,
+  function() db.opts.rotate = chance(0.7) end,
+  function() M.canEditInfo, M.canEditMotd = chance(0.7), chance(0.7) end,
+  function() if chance(0.2) then M.guildInfo = pick({ "", "something the guild master wrote", M.secret() }) end end,
+  function() if chance(0.1) then M.myGuild = pick({ "The True Torchmen", "The True Torchmen", "Another Guild" }) end end,
+  function() if chance(0.05) then db.answers[pick(TOPICS)] = pick({ "", string.rep("q", 300) }) end end,
+  function() if chance(0.03) then db.checkin = pick({ "", string.rep("q", 300), "CHECKIN {name}" }) end end,
   function() -- a guildmate's addon talks
     local kind = pick({ "C", "C", "L", "H", "Z" })
     local body = kind == "L" and (knownName() .. "," .. randomName() .. "," .. pick(JUNK)) or knownName()
@@ -287,7 +356,9 @@ local STEP = {
   function() press(SlashCmdList["TORCHCALL"], pick(JUNK)) end,
   function() press(M.click, pick({ "Search", "Next search", "Whisper next", "Invite next", "Whisper", "Invite", "Skip", "Link", "Welcome",
                                    "Prospects", "Contacted", "Message", "Any zone", "My zone", "Any names", "Latin names", "All", "Mage",
-                                   "Next does", "<", ">", "Restore" })) end,
+                                   "Next does", "<", ">", "Restore", "Answers", "Reply", "Check in", "Add my group", "Put this line back", "Trying every opener",
+                                   "What we are", "How it started", "Time and real life", "Raids", "PvP", "Leveling", "New or returning", "Offer a run",
+                                   "Discord link", "Send the guild invite", "They said no", "Close" })) end,
   function() if chance(0.2) then db.templates[R(1, #db.templates)] = pick({ "Hi {name}", "", string.rep("y", 300), "{bogus} {zone} {level} {class} <{guild}>" }) end end,
   function() if chance(0.1) then db.reply = pick({ "join discord.gg/passthetorch", "discord.gg/x " .. string.rep("w", 300) }) end end,
   function() if chance(0.03) then login(false) end end,
@@ -356,3 +427,4 @@ end
 M.realPrint(("%d sessions, %d steps, 0 failures in %.1fs (seed %d)"):format(SESSIONS, totals.steps, os.clock() - started, SEED))
 M.realPrint(("  %d searches, %d opening whispers, %d invites, %d follow-ups, %d welcomes, %d logins (%d on fresh data)")
   :format(totals.searches, totals.whispers, totals.invites, totals.followups, totals.welcomes, totals.relogs, totals.wipes))
+M.realPrint(("  %d answers, %d check-ins, %d openers to people played with"):format(totals.answers, totals.checkins, totals.groupOpeners))

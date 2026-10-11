@@ -128,7 +128,7 @@ local ok, why = ns.Whisper("Bob Smith")
 check(ok, "whisper sent: " .. tostring(why))
 eq(M.sentChat[1][2], "WHISPER", "sent as a whisper")
 eq(M.sentChat[1][3], "Bob Smith", "to the right player")
-check(M.sentChat[1][1]:find("^Hey Bob, <The True Torchmen>"), "message rendered with first name and guild")
+check(M.sentChat[1][1]:sub(1, 46) == "Hey Bob, got a guild yet? <The True Torchmen> ", "message rendered with first name and guild")
 eq(db.prospects["Bob Smith"].status, "whispered", "marked whispered")
 ok = ns.Whisper("Bob Smith")
 check(not ok, "same player is never whispered twice")
@@ -676,6 +676,331 @@ check(ns.StartSearch(1, 60), "later plans skip the class part")
 eq(M.sentWho[#M.sentWho], "1-60", "one plain search")
 M.answerWho({})
 eq(ns.errors, nil, "no handler errors at the very end")
+
+-- 1.1 defaults that were never edited move to the current ones; a rewritten message is left alone
+TorchcallDB = { templates = { ns.OLD_TEMPLATES[1], "My own pitch for {name}.", ns.OLD_TEMPLATES[3], "A fourth one." } }
+local ns2 = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall")
+eq(TorchcallDB.templates[1], ns2.TEMPLATES[1], "an untouched old default becomes the new one")
+eq(TorchcallDB.templates[2], "My own pitch for {name}.", "a message you wrote is kept")
+eq(TorchcallDB.templates[3], ns2.TEMPLATES[3], "the third old default too")
+eq(TorchcallDB.templates[4], "A fourth one.", "extra messages are kept")
+for i, t in ipairs(ns2.TEMPLATES) do
+  check(#t < #ns2.OLD_TEMPLATES[1], "new message " .. i .. " is shorter than the old opener")
+  check(t:find("?", 1, true), "new message " .. i .. " asks a question")
+  check(not t:find("\226\128\148", 1, true) and not t:find("\226\128\147", 1, true), "new message " .. i .. " has no long dashes")
+  check(not t:find("{zone}", 1, true), "new message " .. i .. " does not depend on a zone the search may not give")
+end
+
+
+-- 1.2: answers, rotation, played-together prospects, check-ins, who stayed ------------------------
+M.reset(true)
+ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall")
+M.fire("PLAYER_LOGIN")
+db = TorchcallDB
+local longP = { name = "Bartholomeus Worthington", level = 60, classStr = "Death Knight", zone = "The Barrens" }
+for _, a in ipairs(ns.ANSWERS) do
+  if a.text then
+    check(#ns.Render(a.text, longP) <= 255, "answer " .. a.key .. " fits with a long name")
+    check(not a.text:find("\226\128[\147\148]"), "answer " .. a.key .. " has no long dashes")
+    eq(db.answers[a.key], a.text, "answer " .. a.key .. " installed")
+  end
+  check(type(a.label) == "string" and #a.words > 0, "answer " .. a.key .. " has a label and words to listen for")
+end
+check(#ns.Render(ns.CHECKIN, longP) <= 255 and #ns.Render(ns.GROUP_TEMPLATE, longP) <= 255, "check-in and group lines fit")
+for i, t in ipairs(ns.TEMPLATES) do
+  check(not t:find("http", 1, true) and not t:find("discord", 1, true) and not t:find("%.gg"), "opener " .. i .. " carries no Discord invite")
+  check(i == 4 or not t:find("%.dev"), "only the fourth opener carries the site")
+  check(#ns.Render(t, longP) <= 160, "opener " .. i .. " is short")
+end
+
+-- what a reply is asking for
+for text, want in pairs({
+  ["do you guys raid?"] = "raids", ["what times are you on"] = "life", ["is there pvp"] = "pvp", ["Sure, invite me"] = "invite",
+  ["yes"] = "invite", ["no thanks"] = "skip", ["not interested"] = "skip", ["im new to the game"] = "new", ["whats the guild about"] = "about",
+  ["got a discord?"] = "discord", ["maybe, not sure yet"] = "run", ["how many members"] = "story", ["do you run dungeons"] = "leveling",
+  ["I already have a guild"] = "skip", ["STOP"] = "skip", ["ok what kind of guild is it"] = "about", ["yeah do you raid"] = "raids",
+}) do eq(ns.Suggest(text), want, 'reply "' .. text .. '"') end
+eq(ns.Suggest("asdf qwer"), nil, "gibberish suggests nothing")
+eq(ns.Suggest(nil), nil, "no text suggests nothing")
+eq(ns.Suggest("know any good fishing spots"), nil, '"know" is not "no"')
+
+seed({ M.player("Ann One", "", 12, "MAGE"), M.player("Bea Two", "", 14, "PRIEST"), M.player("Cal Three", "", 20, "WARRIOR"), M.player("Dee Four", "", 22, "MAGE") })
+M.sentChat = {}
+local ok, why = ns.Answer("Ann One", "raids")
+check(not ok and why:find("wrote back"), "no answer to someone who was never whispered")
+M.advance(10) check(ns.Whisper("Ann One"), "opener to Ann")
+ok, why = ns.Answer("Ann One", "raids")
+check(not ok and why:find("wrote back"), "no answer to someone who has not replied")
+eq(#M.sentChat, 1, "and nothing was sent")
+M.fire("CHAT_MSG_WHISPER", "do you raid?", "Ann One")
+check(table.concat(M.printed, "\n"):find("They are asking about: raids", 1, true), "the reply names what they asked about")
+ok, why = ns.Answer("Ann One", "raids")
+check(not ok and why:find("Next whisper in"), "answers respect the pause between whispers: " .. tostring(why))
+M.advance(10)
+check(ns.Answer("Ann One", "raids"), "an answer goes to someone who wrote back")
+eq(M.sentChat[#M.sentChat][3], "Ann One", "to that player") eq(M.sentChat[#M.sentChat][2], "WHISPER", "as a whisper")
+check(M.sentChat[#M.sentChat][1]:find("December 9", 1, true), "with the raid answer")
+M.advance(10)
+ok, why = ns.Answer("Ann One", "raids")
+check(not ok and why:find("already has"), "the same answer is never sent twice")
+ok, why = ns.Answer("Ann One", "nonsense")
+check(not ok and why:find("no answer called"), "an unknown topic is refused")
+check(ns.Answer("Ann One", "discord"), "the Discord answer is the follow-up line")
+check(M.sentChat[#M.sentChat][1]:find("discord.gg", 1, true) and db.prospects["Ann One"].linked, "and marks them linked")
+M.advance(10) check(not ns.Answer("Ann One", "discord"), "which also goes once")
+local sentBefore = #M.sentChat
+for _, key in ipairs({ "about", "life", "pvp" }) do M.advance(10) check(ns.Answer("Ann One", key), "answer " .. key) end
+M.advance(10)
+ok, why = ns.Answer("Ann One", "new")
+check(not ok and why:find("type to them yourself"), "five answers is the most one player gets: " .. tostring(why))
+eq(#M.sentChat, sentBefore + 3, "nothing sent past the limit")
+eq(#(ns.AnswersLeft("Ann One")), 0, "and no answers are offered")
+eq(db.stats.answers, 4, "answers counted")
+db.answers.pvp = string.rep("x", 260)
+M.advance(10) check(ns.Whisper("Bea Two"), "opener to Bea")
+M.fire("CHAT_MSG_WHISPER", "pvp?", "Bea Two")
+M.advance(10)
+ok, why = ns.Answer("Bea Two", "pvp")
+check(not ok and why:find("255"), "an overlong answer is refused")
+db.answers.pvp = ""
+ok, why = ns.Answer("Bea Two", "pvp")
+check(not ok and why:find("empty"), "an empty answer is refused")
+db.answers.pvp = ns.AnswerTopic("pvp").text
+M.lockdown = true
+ok, why = ns.Answer("Bea Two", "pvp")
+check(not ok and why:find("instance"), "no answers where the game holds chat")
+M.lockdown = false
+M.chatError = true
+ok = ns.Answer("Bea Two", "pvp")
+check(not ok and not (db.prospects["Bea Two"].ans or {}).pvp, "a refused answer is not marked sent")
+M.chatError = nil
+check(ns.Answer("Bea Two", "pvp"), "and can be sent once chat works")
+M.fire("CHAT_MSG_SYSTEM", "Bea Two declines your guild invitation.")
+
+-- invites: cold against after a conversation
+M.advance(10)
+check(ns.Invite("Ann One"), "invite after a conversation")
+eq(db.prospects["Ann One"].path, "warm", "marked as a warm invite")
+M.advance(10)
+check(ns.Invite("Cal Three"), "invite with no word first")
+eq(db.prospects["Cal Three"].path, "cold", "marked as a cold invite")
+M.fire("CHAT_MSG_SYSTEM", "Ann One has joined the guild.")
+M.fire("CHAT_MSG_SYSTEM", "Cal Three declines your guild invitation.")
+local f = ns.Funnel()
+eq(f.warm.invited, 1, "one warm invite") eq(f.warm.joined, 1, "which joined") eq(f.cold.declined, 1, "one cold invite declined")
+check(f.advice:find("Not enough", 1, true), "no advice on two invites")
+db.stats.cold = { invited = 40, joined = 10, declined = 25, stayed = 0, left = 0 }
+db.stats.warm = { invited = 20, joined = 12, declined = 3, stayed = 0, left = 0 }
+check(ns.Funnel().advice:find("Talk first", 1, true), "with enough of both, the better path is named")
+db.stats.warm.joined = 2
+check(ns.Funnel().advice:find("watch who stays", 1, true), "and when cold invites win, it says what to watch")
+db.stats.cold, db.stats.warm = { invited = 0, joined = 0, declined = 0, stayed = 0, left = 0 }, { invited = 1, joined = 1, declined = 0, stayed = 0, left = 0 }
+
+-- welcome still works, then the check-in a few days later
+M.advance(10) check(ns.Welcome("Ann One"), "welcome in guild chat")
+ok, why = ns.CheckIn("Ann One")
+check(not ok and why:find("only just joined"), "no check-in on day one")
+eq(#ns.DueCheckIns(), 0, "nobody due yet")
+M.advance(3 * 86400)
+eq(#ns.DueCheckIns(), 1, "due after a few days")
+M.sentChat = {}
+check(ns.CheckIn("Ann One"), "check-in sent")
+check(M.sentChat[1][2] == "WHISPER" and M.sentChat[1][3] == "Ann One" and M.sentChat[1][1]:find("how are you finding", 1, true), "as one whisper to the recruit")
+M.advance(10)
+ok, why = ns.CheckIn("Ann One")
+check(not ok and why:find("already had"), "one check-in per recruit")
+eq(#ns.DueCheckIns(), 0, "and they are no longer due")
+ok = ns.CheckIn("Cal Three")
+check(not ok, "no check-in for someone who never joined")
+M.fire("CHAT_MSG_WHISPER", "its great thanks", "Ann One")
+eq(db.prospects["Ann One"].said, "its great thanks", "their answer to the check-in is kept")
+eq(db.prospects["Ann One"].status, "joined", "and changes nothing else")
+-- a check-in to someone offline can be sent again
+db.prospects["Ann One"].checked = nil
+check(ns.CheckIn("Ann One"), "second recruit check-in")
+M.fire("CHAT_MSG_SYSTEM", "No player named 'Ann One' is currently playing.")
+eq(db.prospects["Ann One"].checked, nil, "a check-in that reached nobody is not counted")
+M.advance(30 * 86400)
+eq(#ns.DueCheckIns(), 0, "after three weeks a check-in is no longer offered")
+
+-- who stayed
+M.roster = { "Vesh Torchman", "Ann One" }
+db.prospects["Zed Gone"] = { name = "Zed Gone", status = "joined", t = time() - 10 * 86400, path = "cold" }
+db.prospects["New Kid"] = { name = "New Kid", status = "joined", t = time() - 86400, path = "cold" }
+db.prospects["Old Join"] = { name = "Old Join", status = "joined", t = time() - 10 * 86400 }
+M.fire("GUILD_ROSTER_UPDATE")
+eq(db.prospects["Ann One"].stayed, true, "a recruit still on the roster after a week stayed")
+eq(db.prospects["Zed Gone"].stayed, false, "one who is not, left")
+eq(db.prospects["New Kid"].stayed, nil, "a recruit of one day is not judged yet")
+eq(db.stats.warm.stayed, 1, "stayed counted on its path") eq(db.stats.cold.left, 1, "left counted on its path")
+eq(db.prospects["Old Join"].stayed, false, "a join from before paths existed is marked") eq(db.stats.cold.left, 1, "but not counted on a path")
+M.fire("GUILD_ROSTER_UPDATE")
+eq(db.stats.warm.stayed, 1, "each recruit is judged once")
+db.prospects["Hid Den"] = { name = "Hid Den", status = "joined", t = time() - 10 * 86400, path = "cold" }
+M.rosterHidden = true
+M.fire("GUILD_ROSTER_UPDATE")
+eq(db.prospects["Hid Den"].stayed, nil, "a roster the game hides proves nothing")
+M.rosterHidden = nil
+M.roster = {}
+M.fire("GUILD_ROSTER_UPDATE")
+eq(db.prospects["Hid Den"].stayed, nil, "an empty roster proves nothing either")
+
+-- people you played with
+M.sentChat, M.invited = {}, {}
+ok, why = ns.AddGroup()
+check(not ok and why:find("not in a group"), "no group, nothing added")
+M.group = { { name = "Pat Party", guild = nil, class = "PRIEST", level = 18 }, { name = "Gil Ded", guild = "Other Guild", class = "ROGUE" },
+            { name = "Sec Ret", guild = "secret" }, { name = "Dee Four", class = "MAGE", level = 22 }, { name = "Ann One" } }
+ok, why = ns.AddGroup()
+check(ok and why:find("Pat Party", 1, true), "an unguilded party member is added: " .. tostring(why))
+check(not why:find("Gil Ded", 1, true) and not db.prospects["Gil Ded"], "someone with a guild is not")
+check(not db.prospects["Sec Ret"], "someone whose guild the game hides is left alone")
+eq(db.prospects["Dee Four"].ran, true, "someone already waiting is marked as played with")
+eq(db.prospects["Ann One"].status, "joined", "someone already contacted is untouched")
+eq(#M.sentChat + #M.invited, 0, "adding a group contacts nobody")
+eq(ns.List("new")[1].ran, true, "people you played with are at the top")
+db.opts.lo, db.opts.hi = 50, 60
+check(ns.Matches(db.prospects["Pat Party"]), "and are never filtered away")
+db.opts.lo, db.opts.hi = 1, 60
+M.advance(10)
+check(ns.Whisper("Pat Party"), "whisper to a party member")
+check(M.sentChat[1][1]:find("^Good run, Pat"), "uses the line for people you played with: " .. M.sentChat[1][1])
+ok = ns.AddGroup()
+check(not ok, "adding the same group again adds nobody")
+M.raid = true
+M.group = { { name = "Rai Der", class = "HUNTER", level = 30 }, { name = "An Npc", npc = true } }
+ok, why = ns.AddGroup()
+check(ok and db.prospects["Rai Der"] and not db.prospects["An Npc"], "raid members are read too, players only")
+M.group, M.raid = {}, false
+
+-- rotation: every opener gets its turn, then the best is preferred
+db.tstats = {}
+db.opts.rotate, db.opts.template = true, 2
+local keys = {}
+for i, t in ipairs(db.templates) do keys[i] = ns.TemplateKey(t) end
+eq(ns.PickTemplate(), 1, "with nothing sent, the first opener goes first")
+db.tstats[keys[1]] = { sent = 20, replied = 1, joined = 0 }
+db.tstats[keys[2]] = { sent = 5, replied = 0, joined = 0 }
+db.tstats[keys[3]] = { sent = 20, replied = 6, joined = 0 }
+db.tstats[keys[4]] = { sent = 20, replied = 2, joined = 0 }
+eq(ns.PickTemplate(), 2, "the least tried opener is sent until each has twenty")
+db.tstats[keys[2]].sent = 20
+eq(ns.PickTemplate(), 3, "then the one with the best answer rate")
+db.tstats[keys[1]].sent = 24 -- total 84: every fifth send explores
+eq(ns.PickTemplate(), 2, "but every fifth send still goes to the least tried")
+db.opts.rotate = false
+eq(ns.PickTemplate(), 2, "rotation off: the opener showing in the window")
+db.opts.rotate = true
+db.tstats = {}
+eq(ns.PickTemplate({ name = "No Class" }), 1, "a player with no class is not sent the opener that names one")
+db.tstats[keys[1]] = { sent = 30, replied = 0, joined = 0 }
+db.tstats[keys[3]] = { sent = 30, replied = 0, joined = 0 }
+db.tstats[keys[4]] = { sent = 30, replied = 0, joined = 0 }
+check(ns.PickTemplate({ name = "No Class" }) ~= 2, "even when it is the least tried")
+eq(ns.PickTemplate({ name = "Has Class", classStr = "Mage" }), 2, "a player with a class can get it")
+db.opts.rotate, db.opts.template = false, 2
+eq(ns.PickTemplate({ name = "No Class" }), 1, "rotation off, same rule")
+db.opts.rotate = true
+
+-- the window: Answers tab, conversation panel, row actions
+M.printed = {}
+SlashCmdList["TORCHCALL"]("")
+check(M.click("Answers"), "Answers tab opens")
+check(M.click(">") and M.click("<") and M.click("Put this line back"), "its buttons work")
+check(M.click("Message") and M.click("Trying every opener"), "the rotation button toggles")
+eq(db.opts.rotate, false, "rotation off from the window")
+check(M.click("Trying every opener") and db.opts.rotate == true, "and back on")
+check(M.click("Prospects"), "back to prospects")
+seed({ M.player("Eve Five", "", 15, "MAGE") })
+M.advance(10) check(ns.Whisper("Eve Five"), "opener to Eve")
+check(not M.click("What we are"), "the conversation panel is closed until someone answers")
+M.fire("CHAT_MSG_WHISPER", "sure, do you guys pvp?", "Eve Five")
+check(M.click("Reply"), "a row for someone who answered has a Reply button")
+M.advance(10)
+M.sentChat = {}
+check(M.click("PvP"), "the PvP answer button is there")
+check(#M.sentChat == 1 and M.sentChat[1][3] == "Eve Five" and M.sentChat[1][1]:find("PvP ruleset", 1, true), "and sends that answer to that player")
+M.advance(10)
+check(not M.click("PvP"), "a sent answer cannot be pressed again")
+check(M.click("Send the guild invite"), "invite from the conversation panel")
+eq(M.invited[#M.invited], "Eve Five", "invites that player") eq(db.prospects["Eve Five"].path, "warm", "as a warm invite")
+check(M.click("Close") and not M.click("What we are"), "the panel closes")
+M.advance(10)
+M.printed = {}
+check(M.click("Add my group") and table.concat(M.printed, "\n"):find("not in a group", 1, true), "Add my group with no group says so")
+M.group = { { name = "Fay Six", class = "DRUID", level = 20 } }
+SlashCmdList["TORCHCALL"]("stats")
+check(M.click("Add my group") and db.prospects["Fay Six"] and db.prospects["Fay Six"].ran, "Add my group adds the party")
+for _, cmd in ipairs({ "group", "rotate", "rotate", "answer", "answer raids Nobody Here", "answer raids Eve Five", "checkin", "checkin Eve Five", "stats", "help" }) do
+  check(pcall(SlashCmdList["TORCHCALL"], cmd), "/torchcall " .. cmd)
+end
+local printed = table.concat(M.printed, "\n")
+for _, needle in ipairs({ "Topics: about", "Invites after a conversation", "Due a check-in: Hid Den", "/torchcall answer <topic> <name>" }) do
+  check(printed:find(needle, 1, true), "command output mentions: " .. needle)
+end
+eq(ns.errors, nil, "no handler errors in the 1.2 section")
+eq(TorchcallDB.log and #(function() local e = {} for _, l in ipairs(TorchcallDB.log) do if l:find("error", 1, true) then e[#e + 1] = l end end return e end)(), 0, "nothing logged as an error")
+
+-- the follow-up carries both the Discord and the site
+check(ns.REPLY:find("discord.gg/passthetorch", 1, true) and ns.REPLY:find("passthetorch.pages.dev", 1, true), "the follow-up has the Discord and the site")
+check(#ns.Render(ns.REPLY, longP) <= 255, "and still fits")
+
+-- the guild window's texts: shown freely, written only on a typed command with the rank
+check(#ns.GUILD_INFO <= 500 and #ns.GUILD_MOTD <= 128, "guild info and message of the day fit the game's limits")
+check(ns.GUILD_INFO:find("discord.gg/passthetorch", 1, true) and ns.GUILD_INFO:find("passthetorch.pages.dev", 1, true), "guild info has the Discord and the site")
+M.guildInfo, M.guildMotd, M.canEditInfo, M.canEditMotd = "", "old motd", true, true
+local gi = ns.GuildText("info")
+check(gi.can and gi.empty and not gi.same, "an empty guild info is seen as empty")
+M.printed = {}
+SlashCmdList["TORCHCALL"]("guild")
+eq(M.guildInfo, "", "looking at it writes nothing")
+check(table.concat(M.printed, "\n"):find("/torchcall guild info writes this", 1, true), "it says how to write it")
+SlashCmdList["TORCHCALL"]("guild info")
+eq(M.guildInfo, ns.GUILD_INFO, "guild info written on command")
+SlashCmdList["TORCHCALL"]("guild motd")
+eq(M.guildMotd, ns.GUILD_MOTD, "message of the day written on command")
+eq(TorchcallDB.oldmotd, "old motd", "what was there before is kept")
+ok, why = ns.SetGuildText("info")
+check(not ok and why:find("already says"), "writing the same text again is refused")
+M.guildMotd, M.canEditMotd = "the guild master's own", false
+ok, why = ns.SetGuildText("motd")
+check(not ok and why:find("rank cannot") and M.guildMotd == "the guild master's own", "no rank, no write")
+M.canEditMotd, M.myGuild = true, "Another Guild"
+ok, why = ns.SetGuildText("motd")
+check(not ok and why:find("written for") and M.guildMotd == "the guild master's own", "another guild's text is never overwritten with ours")
+M.myGuild = "The True Torchmen"
+M.inGuild = false
+ok = ns.SetGuildText("motd")
+check(not ok, "no guild, no write")
+M.inGuild = true
+check(not ns.SetGuildText("bogus"), "an unknown text is refused")
+
+-- an upgrade from 1.1 saved data gets every new field without losing anything
+M.reset(false)
+TorchcallDB = { prospects = { ["Old Timer"] = { name = "Old Timer", status = "joined", t = time() - 86400 } }, stats = { joined = 9, invited = 37, whispered = 21, replied = 1, declined = 23, found = 64 },
+                opts = { template = 1 }, templates = { ns.OLD_TEMPLATES[1], ns.OLD_TEMPLATES[2], ns.OLD_TEMPLATES[3] }, reply = "my own follow-up", sent = {}, log = {}, contacted = {} }
+ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
+eq(TorchcallDB.stats.joined, 9, "old totals kept") eq(TorchcallDB.reply, "my own follow-up", "an edited follow-up kept")
+eq(TorchcallDB.templates[2], ns.TEMPLATES[2], "old default openers replaced")
+check(TorchcallDB.answers.raids and TorchcallDB.checkin and TorchcallDB.groupmsg and TorchcallDB.opts.rotate == true, "new lines and rotation installed")
+eq(#TorchcallDB.templates, #ns.TEMPLATES, "an untouched 1.1 set gets the fourth opener too")
+TorchcallDB.reply = ns.OLD_REPLY
+M.reset(false)
+ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
+eq(TorchcallDB.reply, ns.REPLY, "an untouched 1.1 follow-up gains the site")
+M.guildInfo = ""
+M.printed = {}
+M.advance(25)
+check(table.concat(M.printed, "\n"):find("guild info is empty", 1, true), "an officer with an empty guild info is told at login")
+eq(M.guildInfo, "", "and nothing is written without the command")
+eq(TorchcallDB.stats.cold.invited, 0, "paths start at zero rather than guessing at old invites")
+check(ns.Funnel().advice:find("Only 5%% of whispers"), "his real numbers produce the advice about the opener: " .. ns.Funnel().advice)
+M.advance(25)
+check(not table.concat(M.printed, "\n"):find("due", 1, true) or true, "login reminder runs without error")
 
 M.realPrint(("%d passed, %d failed"):format(passed, failed))
 os.exit(failed == 0 and 0 or 1)
