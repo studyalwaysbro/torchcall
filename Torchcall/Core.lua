@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.4.0"
+ns.VERSION = "1.4.1"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -128,7 +128,8 @@ local function initDB()
   -- how a search asks for classes: "exclude" and "include" use the game's own class filter
   -- (which of the two it means is learned from the first answer), "text" writes the class
   -- into the search words, "local" filters here. See onWhoResults.
-  if o.whoMode ~= "include" and o.whoMode ~= "text" and o.whoMode ~= "local" then o.whoMode = "exclude" end
+  -- "local" is a verdict on one session's answers, never carried into the next
+  if o.whoMode ~= "include" and o.whoMode ~= "text" then o.whoMode = "exclude" end
   if type(o.need) ~= "table" then o.need = {} end -- classes the guild is short of: class token = true
   if type(db.needmsg) ~= "string" then db.needmsg = ns.NEED_TEMPLATE end
   if type(db.board) ~= "table" then db.board = {} end     -- [recruiter] = { joined, stayed, week, t }
@@ -190,7 +191,10 @@ local function findProspect(name)
   local bare = name:gsub("%-[^%-]*$", "") -- a realm suffix, on clients that add one
   if list[bare] then return list[bare] end
   local short = type(Ambiguate) == "function" and plain(try(Ambiguate, name, "none"))
-  if type(short) == "string" then return list[short] end
+  if type(short) == "string" and list[short] then return list[short] end
+  -- Forever names are "First Surname"; some chat events write them "First-Surname"
+  local spaced = name:gsub("%-", " ", 1)
+  if list[spaced] then return list[spaced] end
 end
 ns.FindProspect = findProspect
 
@@ -420,6 +424,7 @@ end
 -- ---------------------------------------------------------------------------
 
 local queue, pending, lastWho = {}, nil, -WHO_GAP
+local sends = 0
 -- Set when a search asked for one class and the answer held another: the server is not
 -- honouring that part of the query, so splitting by it would only repeat the same search.
 local classFilterBroken, raceFilterBroken = false, false
@@ -547,7 +552,7 @@ end
 -- "back to whatever that window wants".
 local function setWhoToUi(on)
   if not on then
-    local frame = _G.WhoFrame
+    local frame = _G.LFGWhoListFrame or _G.WhoFrame -- the who tab on Forever, and on older clients
     on = type(frame) == "table" and type(frame.IsShown) == "function" and plain(try(frame.IsShown, frame)) == true
   end
   if C_FriendList and C_FriendList.SetWhoToUi then pcall(C_FriendList.SetWhoToUi, on and true or false) end
@@ -602,9 +607,11 @@ function ns.NextSearch()
   lastWho = GetTime()
   TorchcallDB.lastWho = time()
   pending = q
+  sends = sends + 1
+  local mine = sends -- the same search sent again later has a timer of its own
   note("Searching " .. describe(q) .. "...")
   C_Timer.After(WHO_TIMEOUT, function()
-    if pending ~= q then return end
+    if pending ~= q or sends ~= mine then return end
     pending = nil
     setWhoToUi(false)
     table.insert(queue, 1, q)
@@ -677,15 +684,30 @@ local function onWhoResults()
   -- The game's class filter was asked for and the answer held other classes. It was read the
   -- wrong way round, or this client ignores it: try the other reading, then the search words.
   -- Whoever came back without a guild is kept either way.
-  if q.classes and wrongClass > 0 then
+  -- Only an answer that is mostly the wrong classes counts: one stray player is not a reason
+  -- to change how every search is asked.
+  if q.classes and wrongClass > rightClass then
     local o = TorchcallDB.opts
     o.whoMode = (o.whoMode == "exclude") and "include" or "text"
     ns.Log("who", "class filter not honoured, now asking by " .. o.whoMode)
-    for i = #queue, 1, -1 do if queue[i].classes then table.remove(queue, i) end end
-    if o.whoMode == "include" then
-      table.insert(queue, 1, { lo = q.lo, hi = q.hi, classes = q.classes, zone = q.zone })
-    else
-      for i = #q.classes, 1, -1 do table.insert(queue, 1, { lo = q.lo, hi = q.hi, class = q.classes[i], zone = q.zone }) end
+    -- the plan is kept: this search goes again, and what was queued behind it stays queued
+    table.insert(queue, 1, { lo = q.lo, hi = q.hi, classes = q.classes, race = q.race, zone = q.zone })
+    if o.whoMode == "text" then
+      -- in words a search carries one class, so each queued search becomes one per class
+      local plan = {}
+      for _, item in ipairs(queue) do
+        if item.classes then
+          for _, token in ipairs(item.classes) do
+            local one = { lo = item.lo, hi = item.hi, class = token, race = item.race, zone = item.zone }
+            local repeatOf = false
+            for _, kept in ipairs(plan) do if sameQuery(kept, one) then repeatOf = true break end end
+            if not repeatOf then plan[#plan + 1] = one end
+          end
+        else
+          plan[#plan + 1] = item
+        end
+      end
+      queue = plan
     end
     note(text .. (" That answer mixed in other classes, so the next search asks a different way. Press Search again (%d left)."):format(#queue))
     return
@@ -699,7 +721,7 @@ local function onWhoResults()
       if sameQuery(queue[i], q) then table.remove(queue, i) end
     end
   end
-  if q.class and wrongClass > 0 and not classFilterBroken then
+  if q.class and wrongClass > rightClass and not classFilterBroken then
     classFilterBroken = true
     TorchcallDB.opts.whoMode = "local"
     ignored("class")
@@ -842,7 +864,7 @@ function ns.Insights()
     local best, bestRate, bestField
     for key, t in pairs(TorchcallDB.buckets[kind]) do
       if t.sent >= BUCKET_MIN then
-        local field = t.joined > 0 and "joined" or "replied"
+        local field = t.joined >= 3 and "joined" or "replied" -- one join is luck; three is a pattern
         local rate = t[field] / t.sent
         -- a band where people join beats one where they only answer
         if not best or (field == "joined" and bestField ~= "joined") or (field == bestField and rate > bestRate) then
@@ -860,11 +882,16 @@ end
 
 -- A recruit of yours joined: a horn and their name across the screen. Only you see and hear it.
 local function celebrate(p)
-  if TorchcallDB.opts.sound and type(PlaySoundFile) == "function" then
-    pcall(PlaySoundFile, "Interface\\AddOns\\Torchcall\\Sounds\\join.ogg", "Master")
+  if TorchcallDB.opts.sound then
+    local played = type(PlaySoundFile) == "function" and plain(try(PlaySoundFile, "Interface\\AddOns\\Torchcall\\Sounds\\join.ogg", "Master"))
+    -- a client that will not play the file still gets a sound of its own
+    if not played and SOUNDKIT and SOUNDKIT.TELL_MESSAGE then pcall(PlaySound, SOUNDKIT.TELL_MESSAGE) end
   end
-  if type(RaidNotice_AddMessage) == "function" and RaidWarningFrame and ChatTypeInfo and ChatTypeInfo.RAID_WARNING then
-    pcall(RaidNotice_AddMessage, RaidWarningFrame, "A NEW TORCHMAN: " .. p.name, ChatTypeInfo.RAID_WARNING)
+  local text, color = "A NEW TORCHMAN: " .. p.name, ChatTypeInfo and ChatTypeInfo.RAID_WARNING
+  if color and RaidWarningUtil and type(RaidWarningUtil.AddMessage) == "function" then
+    pcall(RaidWarningUtil.AddMessage, text, color)
+  elseif color and type(RaidNotice_AddMessage) == "function" and RaidWarningFrame then
+    pcall(RaidNotice_AddMessage, RaidWarningFrame, text, color) -- the same thing on a client from before that
   end
 end
 
@@ -1320,7 +1347,8 @@ function ns.Board()
   rows[1] = { name = ns.myName or "You", joined = mine.joined, stayed = mine.stayed, week = mine.week, me = true }
   for name, r in pairs(TorchcallDB.board) do
     if type(r) == "table" and now - (r.t or 0) <= 30 * 86400 and name ~= ns.myName then
-      rows[#rows + 1] = { name = name, joined = r.joined or 0, stayed = r.stayed or 0, week = r.week or 0 }
+      -- "this week" is only as fresh as the last time they were heard from
+      rows[#rows + 1] = { name = name, joined = r.joined or 0, stayed = r.stayed or 0, week = (now - (r.t or 0) <= 7 * 86400) and (r.week or 0) or 0 }
     end
   end
   table.sort(rows, function(a, b)
@@ -1586,6 +1614,11 @@ function handlers.CHAT_MSG_SYSTEM(text)
           p.checked = nil
           db.stats.checkins = math.max(0, db.stats.checkins - 1)
         end
+      elseif outcome == "joined" and p.status ~= "joined" and (p.by or (p.status ~= "whispered" and p.status ~= "invited")) then
+        -- joined through somebody else: off the list for good, and not counted as yours
+        p.by = p.by or "another recruiter"
+        p.status, p.t = "joined", time()
+        db.contacted[p.name] = p.t
       elseif outcome == "joined" then
         if p.status ~= "joined" then
           db.stats.joined = db.stats.joined + 1
@@ -1639,6 +1672,15 @@ end
 
 function handlers.WHO_LIST_UPDATE()
   onWhoResults()
+end
+
+-- "X is ignoring you" arrives as its own event on this client: that player is never asked again.
+function handlers.CHAT_MSG_IGNORED(_, sender)
+  local p = findProspect(plain(sender))
+  if not p or p.status == "skipped" or p.status == "joined" then return end
+  p.status, p.t = "skipped", time()
+  TorchcallDB.contacted[p.name] = p.t
+  changed()
 end
 
 -- A recruit of yours said something in guild chat: that step is done.
@@ -1718,6 +1760,6 @@ frame:SetScript("OnEvent", function(_, event, ...)
 end)
 
 frame:RegisterEvent("ADDON_LOADED")
-for _, event in ipairs({ "PLAYER_LOGIN", "WHO_LIST_UPDATE", "CHAT_MSG_SYSTEM", "CHAT_MSG_WHISPER", "CHAT_MSG_ADDON", "GUILD_ROSTER_UPDATE", "CHAT_MSG_GUILD", "GROUP_ROSTER_UPDATE" }) do
+for _, event in ipairs({ "PLAYER_LOGIN", "WHO_LIST_UPDATE", "CHAT_MSG_SYSTEM", "CHAT_MSG_WHISPER", "CHAT_MSG_ADDON", "GUILD_ROSTER_UPDATE", "CHAT_MSG_GUILD", "GROUP_ROSTER_UPDATE", "CHAT_MSG_IGNORED" }) do
   pcall(frame.RegisterEvent, frame, event) -- an event this client lacks must not stop the rest
 end

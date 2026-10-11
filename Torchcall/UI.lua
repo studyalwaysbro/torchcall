@@ -32,6 +32,8 @@ local function editableLines()
   end
   list[#list + 1] = { label = "Opener for someone you just played with", get = function() return TorchcallDB.groupmsg end,
                       set = function(v) TorchcallDB.groupmsg = v end, original = ns.GROUP_TEMPLATE }
+  list[#list + 1] = { label = "Opener for a class the guild needs (/torchcall need)", get = function() return TorchcallDB.needmsg end,
+                      set = function(v) TorchcallDB.needmsg = v end, original = ns.NEED_TEMPLATE }
   list[#list + 1] = { label = "Check-in, a few days after they join", get = function() return TorchcallDB.checkin end,
                       set = function(v) TorchcallDB.checkin = v end, original = ns.CHECKIN }
   return list
@@ -958,7 +960,7 @@ local function slash(input)
     else
       local names = {}
       for i, token in ipairs(list) do names[i] = ns.ClassName(token) end
-      ns.Print("The guild needs: " .. table.concat(names, ", ") .. ". They come first on the list and get the opener written for it (Message tab words are kept for everyone else).")
+      ns.Print("The guild needs: " .. table.concat(names, ", ") .. ". They come first on the list and get the opener written for it. That opener is on the Answers tab, after the answers.")
     end
     UI.Refresh()
   elseif cmd == "board" then

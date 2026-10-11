@@ -38,6 +38,7 @@ M.playedFiles, M.notices = {}, {}
 function PlaySoundFile(path, channel) assert(type(path) == "string" and channel == "Master", "PlaySoundFile(path, \"Master\")") M.playedFiles[#M.playedFiles + 1] = path return true, 1 end
 RaidWarningFrame = {}
 ChatTypeInfo = { RAID_WARNING = { r = 1, g = 0.3, b = 0 } }
+RaidWarningUtil = { AddMessage = function(text, color) assert(type(text) == "string" and type(color) == "table", "RaidWarningUtil.AddMessage(text, color)") M.notices[#M.notices + 1] = text end }
 function RaidNotice_AddMessage(frame, text, color) assert(frame == RaidWarningFrame and type(text) == "string" and type(color) == "table", "RaidNotice_AddMessage(frame, text, color)") M.notices[#M.notices + 1] = text end
 function PlaySound(id, extra) assert(type(id) == "number" and extra == nil, "PlaySound takes the sound id only") end
 UISpecialFrames = {}

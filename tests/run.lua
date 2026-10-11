@@ -1151,7 +1151,12 @@ check(insight:find("levels 20-29: 46% answered", 1, true) and insight:find("Prie
 check(not insight:find("Warrior", 1, true), "a class with one contact is not ranked")
 M.fire("CHAT_MSG_SYSTEM", "Band 1 has joined the guild.")
 eq(db.buckets.level["20-29"].joined, 1, "a join is counted in its band")
-check(table.concat(ns.Insights(), " | "):find("levels 20-29: 8% joined", 1, true), "and once anyone joins, joining is what is ranked: " .. table.concat(ns.Insights(), " | "))
+check(table.concat(ns.Insights(), " | "):find("levels 20-29: 46% answered", 1, true), "one join is luck: answers are still what is ranked: " .. table.concat(ns.Insights(), " | "))
+db.buckets.level["20-29"].joined = 3
+check(table.concat(ns.Insights(), " | "):find("levels 20-29: 23% joined", 1, true), "three joins and joining is what is ranked: " .. table.concat(ns.Insights(), " | "))
+db.buckets.level["1-9"] = { sent = 12, replied = 11, joined = 1 }
+check(table.concat(ns.Insights(), " | "):find("levels 20-29", 1, true), "a band where people join still beats one where they only answer")
+db.buckets.level["20-29"].joined, db.buckets.level["1-9"] = 1, nil
 slash("stats")
 
 -- the join horn
@@ -1225,6 +1230,77 @@ for i = 1, 80 do M.fire("CHAT_MSG_ADDON", "Torchcall", "S;1;f" .. i .. ";1,0,0",
 local kept = 0 for _ in pairs(db.board) do kept = kept + 1 end
 check(kept <= 60, "the board cannot be flooded (" .. kept .. ")")
 slash("board") slash("help")
+-- names the game writes with a dash, the ignore event, the older notice call, a refused sound
+db.prospects["Dash Name"] = { name = "Dash Name", status = "joined", t = time() }
+M.fire("CHAT_MSG_GUILD", "hello", "Dash-Name")
+check(db.prospects["Dash Name"].steps and db.prospects["Dash Name"].steps.hello, "a sender written First-Surname is still matched")
+db.prospects["Iggy Nore"] = { name = "Iggy Nore", status = "whispered", t = time() }
+M.fire("CHAT_MSG_IGNORED", "", "Iggy Nore")
+eq(db.prospects["Iggy Nore"].status, "skipped", "someone who is ignoring you is never asked again")
+M.fire("CHAT_MSG_IGNORED", M.secret(), M.secret()) M.fire("CHAT_MSG_IGNORED", "", "A Stranger")
+db.prospects["Old Client"] = { name = "Old Client", status = "invited", t = time(), path = "cold" }
+local keepUtil, keepFile = RaidWarningUtil, PlaySoundFile
+RaidWarningUtil = nil
+PlaySoundFile = function() return false end
+M.fire("CHAT_MSG_SYSTEM", "Old Client has joined the guild.")
+eq(M.notices[#M.notices], "A NEW TORCHMAN: Old Client", "without the new notice call the older one is used")
+RaidWarningUtil, PlaySoundFile = keepUtil, keepFile
+LFGWhoListFrame = { IsShown = function() return true end }
+M.advance(10) ns.StartSearch(1, 60) M.answerWho({}, 0)
+eq(M.whoToUi, true, "with the game's who tab open, results keep going to it after our search")
+LFGWhoListFrame = nil
+-- review round: joins through someone else, a stale board, one stray class, the plan surviving a flip, a re-sent search
+db.prospects["Taken Tom"] = { name = "Taken Tom", status = "taken", by = "Hyde Recruiter", t = time() }
+db.prospects["Waiting Wendy"] = { name = "Waiting Wendy", status = "new", seen = time(), level = 20, class = "MAGE" }
+local before, hornsNow, addonNow = ns.MyScore().joined, #M.playedFiles, #M.sentAddon
+M.fire("CHAT_MSG_SYSTEM", "Taken Tom has joined the guild.") M.fire("CHAT_MSG_SYSTEM", "Waiting Wendy has joined the guild.")
+M.advance(10)
+eq(ns.MyScore().joined, before, "someone who joined through another recruiter is not counted as yours")
+eq(#M.playedFiles, hornsNow, "and gets no horn")
+local listed = false
+for _, p in ipairs(ns.Recruits()) do if p.name == "Waiting Wendy" or p.name == "Taken Tom" then listed = true end end
+check(not listed, "and is not on your recruits list")
+eq(db.prospects["Waiting Wendy"].status, "joined", "but is off the waiting list for good")
+db.board["Stale Sam"] = { joined = 12, stayed = 3, week = 5, t = time() - 20 * 86400 }
+for _, row in ipairs(ns.Board()) do if row.name == "Stale Sam" then eq(row.week, 0, "a recruiter not heard from in a week has no 'this week'") end end
+db.board["Stale Sam"] = nil
+db.opts.whoMode = "exclude"
+ns.ToggleClass(nil) ns.ToggleClass("PRIEST") ns.ToggleClass("MAGE")
+M.advance(10) ns.StartSearch(1, 60)
+local mixed = crowd(49, "MAGE", nil, "Mostly") mixed[50] = P("One Stray", nil, 30, "WARRIOR")
+M.answerWho(mixed, 300)
+eq(db.opts.whoMode, "exclude", "one stray class among forty-nine right ones changes nothing")
+eq(ns.QueueSize(), 2, "and the plan carries on")
+M.advance(6) ns.NextSearch()
+M.answerWho(crowd(50, "ROGUE", nil, "AllWrong"), 300)
+eq(db.opts.whoMode, "include", "an answer that is all the wrong classes does")
+check(ns.QueueSize() >= 2, "and the rest of the plan survives it (" .. ns.QueueSize() .. " queued)")
+M.advance(6) ns.NextSearch() M.answerWho(crowd(50, "HUNTER", nil, "StillWrong"), 300)
+eq(db.opts.whoMode, "text", "then the words")
+local perClass = true
+M.advance(6) ns.NextSearch()
+check(M.sentWho[#M.sentWho]:find('c%-"'), "the queued searches were rewritten one class each: " .. M.sentWho[#M.sentWho])
+check(ns.QueueSize() >= 3, "with nothing dropped (" .. ns.QueueSize() .. " queued)")
+M.answerWho({}, 0)
+db.opts.whoMode = "local"
+M.reset(false)
+ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
+db = TorchcallDB slash = SlashCmdList["TORCHCALL"]
+eq(db.opts.whoMode, "exclude", "'filter here' is never carried into the next session")
+-- a search put back and sent again is not cancelled by the first send's timer
+ns.ToggleClass(nil)
+M.advance(10)
+ns.StartSearch(1, 60)
+M.advance(1) C_FriendList.SendWho("someone else's search")
+check(not ns.SearchPending(), "a foreign search puts ours back")
+M.advance(4.5) check(ns.NextSearch(), "sent again")
+M.advance(1)
+check(ns.SearchPending(), "and still waiting when the first send's timer runs out")
+M.answerWho({ P("Late Larry", nil, 12, "ROGUE") }, 1)
+check(db.prospects["Late Larry"], "its answer is accepted")
+local hasNeed = false
+slash("") -- open the window so its lists exist
 eq(ns.errors, nil, "no errors in the 1.4 section")
 M.whoMode = "text"
 
