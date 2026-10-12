@@ -1367,6 +1367,59 @@ M.fire("CHAT_MSG_SYSTEM", (M.invited[#M.invited]) .. " has joined the guild.") M
 eq(#M.sentChat, g0 + 3, "switched off, the welcome waits for the button")
 slash("autowelcome on") slash("autowelcome")
 eq(ns.errors, nil, "no errors in the welcome section")
+
+-- a client that refuses chat sent by a timer: nothing is marked sent, and one press does it instead
+M.pressOnly = true
+db.opts.autowelcome = true
+db.prospects["Held Hank"] = { name = "Held Hank", status = "invited", t = time(), level = 12 }
+g0 = #M.sentChat
+M.fire("CHAT_MSG_SYSTEM", "Held Hank has joined the guild.") M.advance(5)
+eq(#M.sentChat, g0, "the game refused the timer's welcome")
+check(not db.prospects["Held Hank"].welcomed, "so he is not marked welcomed")
+check(db.opts.pressOnly, "and the addon stops trying by timer")
+eq(ns.PendingWelcome() and ns.PendingWelcome().name, "Held Hank", "he is waiting for a press")
+check(M.click("Welcome Held"), "a Welcome button is on screen")
+eq(#M.sentChat, g0 + 1, "one press sends it") check(M.sentChat[#M.sentChat][1]:find("Held", 1, true), "to him")
+check(db.prospects["Held Hank"].welcomed, "now he is marked") eq(ns.PendingWelcome(), nil, "and nobody is waiting")
+check(not M.click("Welcome Held"), "the button is gone")
+M.advance(60)
+eq(#M.sentChat, g0 + 1, "the retry timer does not say it twice")
+-- the next one: no timer attempt at all, and the Next key does it before anything else
+db.prospects["Held Hattie"] = { name = "Held Hattie", status = "invited", t = time(), level = 12 }
+local r0 = 0 for _, line in ipairs(db.log) do if line:find("refused", 1, true) then r0 = r0 + 1 end end
+M.fire("CHAT_MSG_SYSTEM", "Held Hattie has joined the guild.") M.advance(30)
+local r1 = 0 for _, line in ipairs(db.log) do if line:find("refused", 1, true) then r1 = r1 + 1 end end
+eq(r1, r0, "the game is not asked a second time, so no second error on screen")
+eq(#M.sentChat, g0 + 1, "nothing sent yet")
+db.prospects["Next Ned"] = { name = "Next Ned", status = "new", t = time(), seen = time(), level = 12, class = "MAGE", ran = true }
+check(ns.NextTarget(), "somebody is waiting for the Next key too")
+M.advance(10)
+local i1 = #M.invited
+Torchcall_KeyNext()
+eq(#M.sentChat, g0 + 2, "the Next key welcomes her") eq(M.sentChat[#M.sentChat][2], "GUILD", "in guild chat")
+eq(#M.invited, i1, "and that press does nothing else")
+-- the refusal arriving after the call returned is handled the same way
+db.opts.pressOnly = nil
+db.prospects["Late Lou"] = { name = "Late Lou", status = "invited", t = time(), level = 12 }
+M.pressOnly = false
+M.fire("CHAT_MSG_SYSTEM", "Late Lou has joined the guild.") M.advance(5)
+check(db.prospects["Late Lou"].welcomed, "sent, as far as the addon knows")
+M.fire("ADDON_ACTION_BLOCKED", "Torchcall", "SendChatMessage()")
+check(not db.prospects["Late Lou"].welcomed, "a late refusal takes the mark back")
+eq(ns.PendingWelcome() and ns.PendingWelcome().name, "Late Lou", "and asks for the press")
+M.fire("ADDON_ACTION_BLOCKED", "SomeOtherAddon", "CastSpellByName()")
+check(M.click("Welcome Late"), "pressed") check(db.prospects["Late Lou"].welcomed, "welcomed")
+M.fire("ADDON_ACTION_BLOCKED", "SomeOtherAddon", "CastSpellByName()")
+check(db.prospects["Late Lou"].welcomed, "another addon being stopped is not our welcome being stopped")
+-- an offer does not last for ever
+db.opts.pressOnly = true
+db.prospects["Old Ollie"] = { name = "Old Ollie", status = "invited", t = time(), level = 12 }
+M.fire("CHAT_MSG_SYSTEM", "Old Ollie has joined the guild.") M.advance(10)
+check(ns.PendingWelcome(), "offered") M.advance(1900)
+eq(ns.PendingWelcome(), nil, "half an hour later the offer has passed") check(not M.click("Welcome Old"), "and the button with it")
+slash("autowelcome on") check(not db.opts.pressOnly, "autowelcome on asks the game again")
+eq(ns.errors, nil, "no errors in the press-only section")
+M.pressOnly = nil db.opts.pressOnly = nil
 M.whoMode, M.pitch, M.autowelcome = "text", false, false
 
 -- the version the addon reports is the version on the box

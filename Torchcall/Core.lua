@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.5.0"
+ns.VERSION = "1.5.1"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -951,14 +951,20 @@ function ns.PickTemplate(p)
   return best
 end
 
+-- The game refuses chat an addon sends by itself, off a timer instead of a key press or a click.
+-- It says so with an event, not an error, so the refusal is noted there (see ADDON_ACTION_BLOCKED).
+local chatRefused = false
+local NEEDS_PRESS = "The game only lets an addon speak from a key press or a click."
 local function sendChat(text, channel, target)
   local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
   if type(send) ~= "function" then return false, "This client has no chat function for addons." end
+  chatRefused = false
   local ok, err = pcall(send, text, channel, nil, target)
   if not ok then
     ns.Log("chat", err)
     return false, "The game refused that message."
   end
+  if chatRefused then return false, NEEDS_PRESS end
   return true
 end
 
@@ -1198,8 +1204,29 @@ function ns.TemplateStat(key, field)
   return t
 end
 
+-- A recruit of yours joined and the welcome has to come from a press: who is waiting for one.
+-- Offered for half an hour; after that the moment has passed and the row button is still there.
+local OFFER_FOR = 1800
+function ns.PendingWelcome()
+  local best
+  for _, p in pairs(TorchcallDB.prospects) do
+    if p.status == "joined" and not p.by and not p.welcomed and p.greet and time() - p.greet < OFFER_FOR
+      and (not best or p.greet < best.greet) then best = p end
+  end
+  return best
+end
+
+local function offerWelcome(p)
+  if not p.greet then
+    ns.Print(("Press your Next key or the Welcome button to greet %s in guild chat."):format(p.name))
+  end
+  p.greet = p.greet or time()
+  if ns.UI and ns.UI.OfferWelcome then ns.UI.OfferWelcome() end
+end
+
 -- One line in guild chat for someone who just joined. Once per player, from a click.
 local lastWelcome = -1000
+local lastWelcomed, lastWelcomedAt, lastWelcomeBefore
 function ns.Welcome(name)
   local db = TorchcallDB
   local p = db.prospects[name]
@@ -1214,10 +1241,28 @@ function ns.Welcome(name)
   if #text > 255 then return false, "The welcome line is longer than the game allows (255)." end
   local ok, why = sendChat(text, "GUILD")
   if not ok then return false, why end
+  lastWelcomed, lastWelcomedAt, lastWelcomeBefore = p, GetTime(), lastWelcome
   lastWelcome = GetTime()
   p.welcomed = true
   changed()
+  if ns.UI and ns.UI.OfferWelcome then ns.UI.OfferWelcome() end
   return true
+end
+
+-- The game stopped something this addon did by itself. If that was a welcome, it never reached
+-- guild chat: take the mark back, stop trying by timer, and ask for one press instead.
+local function actionRefused(addon, what)
+  if addon ~= ADDON then return end
+  ns.Log("refused", tostring(what))
+  chatRefused = true
+  local p = lastWelcomed
+  if p and GetTime() - lastWelcomedAt < 3 then
+    -- the refusal arrived after the call had already returned
+    p.welcomed, lastWelcome, lastWelcomed = nil, lastWelcomeBefore, nil
+    TorchcallDB.opts.pressOnly = true
+    offerWelcome(p)
+    changed()
+  end
 end
 
 -- One guild invite to one player.
@@ -1642,7 +1687,14 @@ function handlers.CHAT_MSG_SYSTEM(text)
           if db.opts.autowelcome and C_Timer and C_Timer.After then
             local function greet(again)
               if not TorchcallDB or not TorchcallDB.opts.autowelcome or p.status ~= "joined" or p.welcomed then return end
-              local sent = ns.Welcome(p.name)
+              -- this client has already refused a welcome sent by timer: ask for the press straight away
+              if TorchcallDB.opts.pressOnly then offerWelcome(p) return end
+              local sent, why = ns.Welcome(p.name)
+              if why == NEEDS_PRESS then
+                TorchcallDB.opts.pressOnly = true
+                offerWelcome(p)
+                return
+              end
               -- two people joined together, or the game is holding chat: one more try, then it is the button's job
               if not sent and again then C_Timer.After((TorchcallDB.opts.gap or 4) + 2, function() greet(false) end) end
             end
@@ -1705,6 +1757,11 @@ function handlers.CHAT_MSG_IGNORED(_, sender)
 end
 
 -- A recruit of yours said something in guild chat: that step is done.
+function handlers.ADDON_ACTION_BLOCKED(addon, what)
+  actionRefused(addon, what)
+end
+handlers.ADDON_ACTION_FORBIDDEN = handlers.ADDON_ACTION_BLOCKED
+
 function handlers.CHAT_MSG_GUILD(_, sender)
   sender = plain(sender)
   if type(sender) == "string" then noticeStep(sender, "hello") end
@@ -1781,6 +1838,7 @@ frame:SetScript("OnEvent", function(_, event, ...)
 end)
 
 frame:RegisterEvent("ADDON_LOADED")
-for _, event in ipairs({ "PLAYER_LOGIN", "WHO_LIST_UPDATE", "CHAT_MSG_SYSTEM", "CHAT_MSG_WHISPER", "CHAT_MSG_ADDON", "GUILD_ROSTER_UPDATE", "CHAT_MSG_GUILD", "GROUP_ROSTER_UPDATE", "CHAT_MSG_IGNORED" }) do
+for _, event in ipairs({ "PLAYER_LOGIN", "WHO_LIST_UPDATE", "CHAT_MSG_SYSTEM", "CHAT_MSG_WHISPER", "CHAT_MSG_ADDON", "GUILD_ROSTER_UPDATE", "CHAT_MSG_GUILD", "GROUP_ROSTER_UPDATE", "CHAT_MSG_IGNORED",
+                        "ADDON_ACTION_BLOCKED", "ADDON_ACTION_FORBIDDEN" }) do
   pcall(frame.RegisterEvent, frame, event) -- an event this client lacks must not stop the rest
 end

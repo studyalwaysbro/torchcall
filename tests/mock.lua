@@ -67,7 +67,10 @@ function M.advance(seconds)
     M.wall = M.wall + (t.at - M.now)
     M.now = t.at
     if t.period then M.timers[#M.timers + 1] = { at = t.at + t.period, fn = t.fn, period = t.period } end
-    t.fn()
+    M.inTimer = true
+    local ok, err = pcall(t.fn)
+    M.inTimer = false
+    if not ok then error(err, 0) end
   end
   M.wall = M.wall + (target - M.now)
   M.now = target
@@ -115,6 +118,8 @@ C_ChatInfo = {
   InChatMessagingLockdown = function() return M.lockdown end,
   SendAddonMessage = function(prefix, msg, channel) if M.lockdown then return 11 end if M.addonResult ~= 0 then return M.addonResult end M.sentAddon[#M.sentAddon + 1] = { prefix, msg, channel } return 0 end,
   SendChatMessage = function(msg, channel, lang, target)
+    -- this client refuses chat that does not come from a press: an event, no error, nothing sent
+    if M.pressOnly and M.inTimer then M.fire("ADDON_ACTION_FORBIDDEN", "Torchcall", "SendChatMessage()") return end
     if M.chatError then error("blocked") end
     assert(type(msg) == "string" and #msg <= 255, "chat message too long or not text")
     if M.guard then M.guard(channel, target or msg, msg) end

@@ -900,7 +900,7 @@ local function printHelp()
   print("  /torchcall skip <name>     never contact this player    /torchcall forget <name>   drop them from the list")
   print("  /torchcall cap <number>    new people you may contact per hour (now " .. opts.hourly .. ")")
   print("  /torchcall cap day <number|off>   and per day (now " .. (opts.daily > 0 and opts.daily or "no limit") .. ")")
-  print("  /torchcall autowelcome     welcome your recruit in guild chat by itself when they join, on or off (now " .. (opts.autowelcome and "on" or "off") .. ")")
+  print("  /torchcall autowelcome     a one-press Welcome when your recruit joins (sent by itself where the game allows), on or off (now " .. (opts.autowelcome and "on" or "off") .. ")")
   print("  /torchcall pitch           whisper the opener before an invite to someone new, on or off (now " .. (opts.pitch and "on" or "off") .. ")")
   print("  /torchcall need <classes>  classes the guild is short of (healers, tanks, priest mage, off): they come first")
   print("  /torchcall warm            who answered and is still waiting    /torchcall board   recruiters this week")
@@ -1024,8 +1024,11 @@ local function slash(input)
     end
   elseif cmd == "autowelcome" then
     if rest:lower() == "on" then opts.autowelcome = true elseif rest:lower() == "off" then opts.autowelcome = false else opts.autowelcome = not opts.autowelcome end
-    ns.Print(opts.autowelcome and "When someone you recruited joins, the welcome line goes to guild chat by itself."
-      or "The welcome line is now only sent when you press Welcome.")
+    -- switching it on again is also how you ask for another try after the game refused one
+    if opts.autowelcome and rest:lower() == "on" then opts.pressOnly = nil end
+    ns.Print(not opts.autowelcome and "The welcome line is now only sent when you press Welcome."
+      or opts.pressOnly and "When someone you recruited joins, a Welcome button appears: one press, or your Next key. This game will not let an addon speak by itself."
+      or "When someone you recruited joins, the welcome line goes to guild chat by itself.")
   elseif cmd == "pitch" then
     if rest:lower() == "on" then opts.pitch = true elseif rest:lower() == "off" then opts.pitch = false else opts.pitch = not opts.pitch end
     ns.Print(opts.pitch and "An invite to someone you have not spoken to now sends the opener first, then the invite."
@@ -1148,6 +1151,13 @@ BINDING_NAME_TORCHCALL_TOGGLE = "Open or close the window"
 
 function Torchcall_KeyNext()
   if not (TorchcallDB and opts) then return end
+  -- a recruit of yours is waiting for a hello: that comes first, and it is this press's one message
+  local greet = ns.PendingWelcome()
+  if greet then
+    if act(ns.Welcome, greet.name) then ns.Print("Welcomed " .. greet.name .. ".") end
+    UI.OfferWelcome()
+    return
+  end
   local target = ns.NextTarget()
   if act(ns.Next) and target and not (main and main:IsShown()) then
     ns.Print((opts.mode == "invite" and "Invited " or "Whispered ") .. target.name .. ".")
@@ -1158,6 +1168,30 @@ function Torchcall_KeySearch()
   if not (TorchcallDB and opts) then return end
   startSearch()
   if not (main and main:IsShown()) then ns.Print(ns.searchNote) end
+end
+
+-- One button in the middle of the screen while a recruit of yours waits for a welcome. The game
+-- only lets an addon speak from a press, so this is the press.
+local greetButton
+function UI.OfferWelcome()
+  local p = TorchcallDB and ns.PendingWelcome()
+  if not p then
+    if greetButton then greetButton:Hide() end
+    return
+  end
+  if not greetButton then
+    greetButton = makeButton(UIParent, "", 240, 30)
+    greetButton:SetPoint("TOP", UIParent, "TOP", 0, -150)
+    greetButton:SetFrameStrata("HIGH")
+    greetButton:SetScript("OnClick", function()
+      local q = ns.PendingWelcome()
+      if q then act(ns.Welcome, q.name) end
+      UI.OfferWelcome()
+    end)
+    if C_Timer and C_Timer.NewTicker then C_Timer.NewTicker(60, function() if greetButton:IsShown() then UI.OfferWelcome() end end) end
+  end
+  greetButton:SetText("Welcome " .. ((p.name:match("^(%S+)")) or p.name))
+  greetButton:Show()
 end
 
 function UI.Init()

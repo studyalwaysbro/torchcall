@@ -290,6 +290,7 @@ local STEP = {
   function() db.opts.mode = pick({ "whisper", "whisper", "invite" }) end,
   function() db.opts.pitch = chance(0.5) end,
   function() db.opts.autowelcome = chance(0.5) end,
+  function() M.pressOnly = chance(0.5) end, -- a client that refuses chat sent by a timer
   function() M.fire("CHAT_MSG_GUILD", chance(0.1) and M.secret() or "hi", chance(0.1) and M.secret() or knownName("joined")) end,
   function() M.fire("GROUP_ROSTER_UPDATE") end,
   function() if chance(0.5) then press(ns.Step, knownName("joined"), pick({ "discord", "hello", "run", "junk" })) end end,
