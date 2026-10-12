@@ -59,10 +59,16 @@ local function fail(msg)
   error(broken, 0)
 end
 
+local lastKind, lastTarget
 M.guard = function(kind, target, msg)
-  if not inAction then fail(kind .. " sent outside a press, to " .. tostring(target)) end
-  sends = sends + 1
-  if sends > 1 then fail("one press sent more than one thing (" .. kind .. ")") end
+  -- the one thing that may go out by itself: the guild-chat welcome for your own recruit, with that setting on
+  local own = kind == "GUILD" and not inAction and db.opts.autowelcome
+  if not inAction and not own then fail(kind .. " sent outside a press, to " .. tostring(target)) end
+  if not own then sends = sends + 1 end
+  -- the one pair a press may send: the opener, then the invite, to the same player, with that setting on
+  local pair = sends == 2 and kind == "INVITE" and lastKind == "WHISPER" and lastTarget == target and db.opts.pitch
+  if sends > 1 and not pair and not own then fail("one press sent more than one thing (" .. kind .. ")") end
+  if not own then lastKind, lastTarget = kind, target end
   local o = db.opts
   if kind == "who" then
     if time() - rec.lastWho < 5 then fail("who searches closer than 5 seconds") end
@@ -282,6 +288,8 @@ local STEP = {
   function() db.opts.latin = chance(0.3) end,
   function() db.opts.daily = pick({ 3, 8, 100, 100, 0 }) end,
   function() db.opts.mode = pick({ "whisper", "whisper", "invite" }) end,
+  function() db.opts.pitch = chance(0.5) end,
+  function() db.opts.autowelcome = chance(0.5) end,
   function() M.fire("CHAT_MSG_GUILD", chance(0.1) and M.secret() or "hi", chance(0.1) and M.secret() or knownName("joined")) end,
   function() M.fire("GROUP_ROSTER_UPDATE") end,
   function() if chance(0.5) then press(ns.Step, knownName("joined"), pick({ "discord", "hello", "run", "junk" })) end end,

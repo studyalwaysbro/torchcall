@@ -900,6 +900,8 @@ local function printHelp()
   print("  /torchcall skip <name>     never contact this player    /torchcall forget <name>   drop them from the list")
   print("  /torchcall cap <number>    new people you may contact per hour (now " .. opts.hourly .. ")")
   print("  /torchcall cap day <number|off>   and per day (now " .. (opts.daily > 0 and opts.daily or "no limit") .. ")")
+  print("  /torchcall autowelcome     welcome your recruit in guild chat by itself when they join, on or off (now " .. (opts.autowelcome and "on" or "off") .. ")")
+  print("  /torchcall pitch           whisper the opener before an invite to someone new, on or off (now " .. (opts.pitch and "on" or "off") .. ")")
   print("  /torchcall need <classes>  classes the guild is short of (healers, tanks, priest mage, off): they come first")
   print("  /torchcall warm            who answered and is still waiting    /torchcall board   recruiters this week")
   print("  /torchcall recruits        your recruits and their first week   /torchcall step <name> discord")
@@ -1020,6 +1022,15 @@ local function slash(input)
         end
       end
     end
+  elseif cmd == "autowelcome" then
+    if rest:lower() == "on" then opts.autowelcome = true elseif rest:lower() == "off" then opts.autowelcome = false else opts.autowelcome = not opts.autowelcome end
+    ns.Print(opts.autowelcome and "When someone you recruited joins, the welcome line goes to guild chat by itself."
+      or "The welcome line is now only sent when you press Welcome.")
+  elseif cmd == "pitch" then
+    if rest:lower() == "on" then opts.pitch = true elseif rest:lower() == "off" then opts.pitch = false else opts.pitch = not opts.pitch end
+    ns.Print(opts.pitch and "An invite to someone you have not spoken to now sends the opener first, then the invite."
+      or "An invite is now only the invite, with no whisper before it.")
+    UI.Refresh()
   elseif cmd == "rotate" then
     opts.rotate = not opts.rotate
     ns.Print(opts.rotate and "Trying every opener, then leaning on the one that gets answers." or "Every whisper now uses the opener showing on the Message tab.")

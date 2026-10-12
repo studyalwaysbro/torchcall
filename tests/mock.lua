@@ -216,11 +216,16 @@ GameTooltip = M.newFrame("GameTooltip", "GameTooltip")
 -- Tests written before the game's own class filter was used ask for classes in the search
 -- words. M.whoMode = nil leaves the addon on its real default.
 M.whoMode = "text"
+M.pitch = false
+M.autowelcome = false
 function M.fire(event, ...)
   for _, f in ipairs(M.frames) do
     if f.__events[event] and f.__scripts.OnEvent then f.__scripts.OnEvent(f, event, ...) end
   end
   if event == "ADDON_LOADED" and M.whoMode and TorchcallDB and TorchcallDB.opts then TorchcallDB.opts.whoMode = M.whoMode end
+  -- likewise, older tests expect an invite to be only an invite; M.pitch = nil leaves the real default
+  if event == "ADDON_LOADED" and M.pitch ~= nil and TorchcallDB and TorchcallDB.opts then TorchcallDB.opts.pitch = M.pitch end
+  if event == "ADDON_LOADED" and M.autowelcome ~= nil and TorchcallDB and TorchcallDB.opts then TorchcallDB.opts.autowelcome = M.autowelcome end
 end
 
 -- press the first button whose label starts with this text

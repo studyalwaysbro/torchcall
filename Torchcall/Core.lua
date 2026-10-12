@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.4.1"
+ns.VERSION = "1.5.0"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -116,6 +116,8 @@ local function initDB()
   if o.rotate == nil then o.rotate = true end -- try every opener, then lean on the one that gets answers
   if o.minimap == nil then o.minimap = true end
   if o.sound == nil then o.sound = true end
+  if o.autowelcome == nil then o.autowelcome = true end -- your recruit joins: the welcome line goes to guild chat by itself
+  if o.pitch == nil then o.pitch = true end -- an invite to someone new is preceded by the opener, so they know who is asking
   if o.mode ~= "invite" then o.mode = "whisper" end -- what the Next button does
   o.template = o.template or 1
   o.hourly = math.min(o.hourly or 30, 60) -- first contacts allowed per hour
@@ -1236,6 +1238,14 @@ function ns.Invite(name)
   if limit then return false, limit end
   local invite = (C_GuildInfo and C_GuildInfo.Invite) or GuildInvite
   if type(invite) ~= "function" then return false, "This client has no guild invite for addons." end
+  -- An invite out of nowhere is a box with a guild name on it. Someone not yet spoken to gets
+  -- the opener first, the same one the Whisper button would send, then the invite: one press,
+  -- one player. If the whisper cannot go (too soon, an instance), neither does the invite.
+  if first and db.opts.pitch then
+    local sent, why = ns.Whisper(name)
+    if not sent then return false, why end
+    first = false -- the whisper was the first contact, and was counted as one
+  end
   local ok, err = pcall(invite, name)
   if not ok then
     ns.Log("invite", err)
@@ -1627,6 +1637,17 @@ function handlers.CHAT_MSG_SYSTEM(text)
           bucket(p, "joined")
           celebrate(p)
           p.status, p.t = "joined", time()
+          -- The welcome, a few seconds after the game's own "has joined" line. Only for someone
+          -- you recruited, and once: a second recruiter's addon stays quiet about your recruit.
+          if db.opts.autowelcome and C_Timer and C_Timer.After then
+            local function greet(again)
+              if not TorchcallDB or not TorchcallDB.opts.autowelcome or p.status ~= "joined" or p.welcomed then return end
+              local sent = ns.Welcome(p.name)
+              -- two people joined together, or the game is holding chat: one more try, then it is the button's job
+              if not sent and again then C_Timer.After((TorchcallDB.opts.gap or 4) + 2, function() greet(false) end) end
+            end
+            C_Timer.After(4, function() greet(true) end)
+          end
           if ns.Comm and ns.Comm.Score then ns.Comm.Score() end
         end
         p.status, p.t = "joined", time()

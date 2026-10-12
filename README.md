@@ -10,12 +10,13 @@ It finds players with no guild, opens with one short question, helps you answer 
 - **It always shows you something.** One who search returns 50 players at most. When more are online, you get the first 50 at once and the rest is lined up as batches (by level, then class, then race): press Search again for the next one. The button counts down the few seconds the game makes you wait between searches.
 - **Filters that mean it.** The level range, the classes and the optional Latin-alphabet name filter are applied to every result by the addon itself, not just sent to the server. Change them any time and the list follows. The Next button only ever reaches players who pass them.
 - **Prospect list.** Name, level, class, zone. Whisper, Invite or Skip on every row. Press a column title to sort by it.
+- **An invite introduces itself.** Invite someone you have not spoken to and they first get your opener as a whisper, then the invite, so the box that pops up on their screen has a reason attached. Still one press, one player, and it counts as one contact. `/torchcall pitch off` goes back to the invite alone.
 - **Next button, or a key.** Works down the list, one player per press. Each press is one whisper or one invite, whichever you set it to. Bind it under Options, Keybindings, AddOns.
 - **Nobody is asked twice. Ever.** Every name you contact is remembered for good, not for a week. Recruiters in the same guild share who they contacted, so two officers never pitch the same player.
 - **Short openers that find their own winner.** Four opening whispers ship, each a single question. With rotation on, every one gets about twenty sends, then the one that gets the most answers is used most, with one send in five still going to the least tried. The Message tab shows sent, answered and joined for each wording.
 - **Answers, one press each.** When someone writes back they move to the top, and Reply opens a panel with what they said and a button per topic: what the guild is, how it started, time and real life, raids, PvP, leveling, new players, a dungeon run first, and the Discord and site line. The addon reads their reply and highlights the answer that fits, or tells you it sounds like a yes or a no. Each answer goes to a player once, five at most, and only to someone who wrote to you first. All of them are editable on the Answers tab.
 - **Add my group.** One press puts everyone in your party or raid who has no guild at the top of the list, with an opening line written for someone you just played with. Playing together first is the best reason anyone has to say yes.
-- **Welcome and check-in.** When someone you recruited joins, one press says hello in guild chat. A few days later the row offers a check-in whisper, once. The first week decides who stays.
+- **Welcome and check-in.** When someone you recruited joins, the addon says hello in guild chat for you a few seconds later, once, and only for your own recruits (`/torchcall autowelcome off` puts it back on a button). A few days later the row offers a check-in whisper, once. The first week decides who stays.
 - **Classes we need.** `/torchcall need healers` (or `tanks`, or class names). Those players come first on the list, are marked, and get an opener that says the guild is short a Priest, not a generic pitch.
 - **What works where.** Every contact is counted by level band, class and hour of the day. `/torchcall stats` names the band, class and hour that answer and join most, once there are ten contacts to go on.
 - **Recruiters' board.** `/torchcall board` ranks every recruiter in the guild running Torchcall: joined this week, all time, and still here a week later.
@@ -31,7 +32,7 @@ It finds players with no guild, opens with one short question, helps you answer 
 
 ## What it will not do
 
-There is no "invite all", no "send to everyone", no hands-free mode that turns your normal clicks into invites, and no timer. Those are the features that get recruiters reported. One press reaches one player. The hourly limit and the gap between whispers cannot be switched off; the daily limit is yours to set.
+There is no "invite all", no "send to everyone", no hands-free mode that turns your normal clicks into invites, and no timer. Those are the features that get recruiters reported. One press reaches one player (an invite to someone new is that player's opener and their invite, nothing more). The hourly limit and the gap between whispers cannot be switched off; the daily limit is yours to set. The one thing the addon sends without a press is the guild-chat welcome for someone you recruited, which goes to your own guild and never to a stranger.
 
 ## Install
 
@@ -62,6 +63,7 @@ On Linux with [Yeeterson Forge](https://github.com/studyalwaysbro/yeeterson-forg
 | `/torchcall skip <name>` | Never contact this player |
 | `/torchcall cap <number>` | New people per hour |
 | `/torchcall cap day <number or off>` | New people per day, or no daily limit |
+| `/torchcall pitch` | Whisper the opener before an invite to someone new, on or off |
 | `/torchcall need <classes>` | Classes the guild is short of: `healers`, `tanks`, class names, `off` |
 | `/torchcall warm` | Who answered and is still waiting on you |
 | `/torchcall board` | Recruiters this week |

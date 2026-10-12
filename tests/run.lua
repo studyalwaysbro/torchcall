@@ -1040,6 +1040,7 @@ check(not table.concat(M.printed, "\n"):find("due", 1, true) or true, "login rem
 -- what works where, the recruiters' board, follow-ups, the join horn, the first week
 -- ===========================================================================
 M.whoMode = nil -- from here the addon is on its real default
+M.pitch, M.autowelcome = nil, nil
 M.reset(true)
 ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
 M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
@@ -1302,7 +1303,71 @@ check(db.prospects["Late Larry"], "its answer is accepted")
 local hasNeed = false
 slash("") -- open the window so its lists exist
 eq(ns.errors, nil, "no errors in the 1.4 section")
-M.whoMode = "text"
+-- an invite to someone new brings its own introduction
+M.reset(true)
+ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
+db = TorchcallDB slash = SlashCmdList["TORCHCALL"]
+M.inGuild, M.canInvite = true, true
+eq(db.opts.pitch, true, "by default an invite is preceded by the opener")
+M.advance(10) ns.StartSearch(1, 60)
+M.answerWho({ P("Cold Carl", nil, 20, "MAGE"), P("Cold Cora", nil, 21, "ROGUE"), P("Cold Cy", nil, 22, "PRIEST"), P("Cold Di", nil, 23, "HUNTER") }, 4)
+M.advance(10)
+local c0, i0, sentToday = #M.sentChat, #M.invited, ns.SentToday()
+check(ns.Invite("Cold Carl"), "invite someone never spoken to")
+eq(#M.sentChat - c0, 1, "one whisper goes first") eq(M.sentChat[#M.sentChat][3], "Cold Carl", "to that player") eq(M.sentChat[#M.sentChat][2], "WHISPER", "as a whisper")
+eq(#M.invited - i0, 1, "then one invite") eq(M.invited[#M.invited], "Cold Carl", "to the same player")
+eq(db.prospects["Cold Carl"].status, "invited", "and they are marked invited")
+eq(ns.SentToday() - sentToday, 1, "it counts as one contact, not two")
+check(db.prospects["Cold Carl"].tpl ~= nil, "and the opener's results are tracked like any whisper")
+M.advance(3) -- past the pause between invites, still inside the pause between whispers
+local ok2, why2 = ns.Invite("Cold Cora")
+check(not ok2 and why2:find("whisper", 1, true), "inside the whisper gap neither goes: " .. tostring(why2))
+eq(#M.invited - i0, 1, "no invite without its whisper") eq(db.prospects["Cold Cora"].status, "new", "and the player is still waiting")
+M.advance(10)
+check(ns.Whisper("Cold Cora"), "someone already whispered")
+M.advance(3)
+c0, i0 = #M.sentChat, #M.invited
+check(ns.Invite("Cold Cora"), "is invited")
+eq(#M.sentChat - c0, 0, "without a second whisper") eq(#M.invited - i0, 1, "one invite")
+M.lockdown = true M.advance(10)
+ok2 = ns.Invite("Cold Cy")
+check(not ok2 and #M.invited - i0 == 1, "where the game holds addon chat, the invite waits too")
+M.lockdown = false
+slash("pitch off") eq(db.opts.pitch, false, "it can be switched off")
+M.advance(10) c0, i0 = #M.sentChat, #M.invited
+check(ns.Invite("Cold Cy"), "then an invite")
+eq(#M.sentChat - c0, 0, "is only the invite") eq(#M.invited - i0, 1, "one of them")
+slash("pitch on") slash("pitch") slash("pitch")
+db.opts.mode = "invite"
+M.advance(10) c0, i0 = #M.sentChat, #M.invited
+check(ns.Next(), "the Next button in invite mode")
+eq(#M.sentChat - c0, 1, "whispers") eq(#M.invited - i0, 1, "and invites") eq(M.sentChat[#M.sentChat][3], M.invited[#M.invited], "the same one player")
+eq(ns.errors, nil, "no errors in the pitch section")
+
+-- your recruit joins: the welcome goes out by itself, once
+db.opts.autowelcome = true
+local g0 = #M.sentChat
+M.fire("CHAT_MSG_SYSTEM", "Cold Carl has joined the guild.")
+eq(#M.sentChat, g0, "not in the same instant as the join line")
+M.advance(5)
+eq(#M.sentChat, g0 + 1, "a few seconds later the welcome is in guild chat")
+eq(M.sentChat[#M.sentChat][2], "GUILD", "in guild chat") check(M.sentChat[#M.sentChat][1]:find("Cold", 1, true), "by name: " .. M.sentChat[#M.sentChat][1])
+check(db.prospects["Cold Carl"].welcomed, "and it is marked done, so the button is gone")
+M.fire("CHAT_MSG_SYSTEM", "Cold Carl has joined the guild.") M.advance(30)
+eq(#M.sentChat, g0 + 1, "once per recruit")
+db.prospects["Other Olly"] = { name = "Other Olly", status = "taken", by = "Hyde Recruiter", t = time() }
+M.fire("CHAT_MSG_SYSTEM", "Other Olly has joined the guild.") M.advance(30)
+eq(#M.sentChat, g0 + 1, "somebody else's recruit is theirs to welcome")
+M.fire("CHAT_MSG_SYSTEM", "Cold Cora has joined the guild.") M.fire("CHAT_MSG_SYSTEM", "Cold Cy has joined the guild.")
+M.advance(30)
+eq(#M.sentChat, g0 + 3, "two joining together are both welcomed, one after the other")
+slash("autowelcome off")
+M.fire("CHAT_MSG_SYSTEM", (M.invited[#M.invited]) .. " has joined the guild.") M.advance(30)
+eq(#M.sentChat, g0 + 3, "switched off, the welcome waits for the button")
+slash("autowelcome on") slash("autowelcome")
+eq(ns.errors, nil, "no errors in the welcome section")
+M.whoMode, M.pitch, M.autowelcome = "text", false, false
 
 -- the version the addon reports is the version on the box
 do
