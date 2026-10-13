@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.6.0"
+ns.VERSION = "1.6.1"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -90,6 +90,11 @@ local function initDB()
   if moved == #ns.OLD_TEMPLATES and #db.templates == moved then
     for i = moved + 1, #ns.TEMPLATES do db.templates[i] = ns.TEMPLATES[i] end
   end
+  for i, old in ipairs(ns.OLD_TEMPLATES_2) do
+    if db.templates[i] == old then db.templates[i] = ns.TEMPLATES[i] end
+  end
+  if db.groupmsg == ns.OLD_GROUP_TEMPLATE then db.groupmsg = ns.GROUP_TEMPLATE end
+  if db.needmsg == ns.OLD_NEED_TEMPLATE then db.needmsg = ns.NEED_TEMPLATE end
   if type(db.reply) ~= "string" or db.reply == ns.OLD_REPLY then db.reply = ns.REPLY end
   if type(db.answers) ~= "table" then db.answers = {} end -- [topic] = text, for someone who answered
   for _, a in ipairs(ns.ANSWERS) do

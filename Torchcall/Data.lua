@@ -9,25 +9,34 @@ local _, ns = ...
 
 ns.GUILD_NAME = "The True Torchmen"
 
--- Short on purpose, and each one is a question. The 1.1 openers read like an advert and one
--- whisper in twenty got an answer. With rotation on, every opener here gets a fair number of
--- sends and then the one that gets the most answers is used most. No links in a first whisper:
--- a link from a stranger reads as a gold seller.
+-- Every opener says who is in the guild (experienced players, casual players, new players),
+-- carries the site and the Discord so the player can look before answering, and ends on a
+-- question. With rotation on, each one gets a fair number of sends and then the one that gets
+-- the most answers is used most.
 ns.TEMPLATES = {
+  "Hey {name}, got a guild yet? <{guild}> is a melting pot: experienced players, casual players and brand new players. Guides for every class: passthetorch.pages.dev  Discord: discord.gg/passthetorch  Want an invite?",
+  "Hey {name}, <{guild}> could use another {class}. We have everyone from veterans to casual players, plus leveling guides: passthetorch.pages.dev  Discord: discord.gg/passthetorch  Interested?",
+  "Hi {name}, want a guild invite? <{guild}>: veterans, casual players and new players in one place, real life first. Guides: passthetorch.pages.dev  Discord: discord.gg/passthetorch  Say no and I will not ask again.",
+  "Hey {name}, looking for a guild? <{guild}> has a bit of everything: experienced players, casual players, leveling and class guides. Have a look: passthetorch.pages.dev  Discord: discord.gg/passthetorch  Want in?",
+}
+
+-- Used in place of an opener for someone you added from your own party or raid.
+-- Playing together first is the best reason anyone has to say yes.
+ns.GROUP_TEMPLATE = "Good run, {name}. If you want a guild, <{guild}> is veterans and casual players who level and run dungeons together. Guides: passthetorch.pages.dev  Discord: discord.gg/passthetorch  Want an invite?"
+
+-- Used in place of an opener for a class the guild is short of (/torchcall need).
+ns.NEED_TEMPLATE = "Hey {name}, <{guild}> is short a {class} for dungeons right now. Veterans and casual players alike, no application. Guides: passthetorch.pages.dev  Discord: discord.gg/passthetorch  Want to run with us?"
+
+-- What 1.2 to 1.6.0 shipped with. A saved line that is still exactly one of these was never
+-- edited, so it is swapped for the current one. Anything you rewrote is left alone.
+ns.OLD_TEMPLATES_2 = {
   "Hey {name}, got a guild yet? <{guild}> is a group of friends leveling together. Want to run a dungeon with us and see if it fits?",
   "Hey {name}, <{guild}> could use another {class}. Friends first, dungeons and world PvP, no application. Interested?",
   "Hi {name}, want a guild invite? <{guild}>: friends first, real life comes first, nobody gets yelled at. Say no and I will not ask again.",
   "Hey {name}, got a guild yet? <{guild}> is friends leveling together. Who we are and how we play: passthetorch.pages.dev  Want an invite?",
 }
--- The fourth carries the site so its answer rate can be compared with the three that carry
--- nothing. If it does worse, rotation stops using it by itself.
-
--- Used in place of an opener for someone you added from your own party or raid.
--- Playing together first is the best reason anyone has to say yes.
-ns.GROUP_TEMPLATE = "Good run, {name}. If you want a guild, <{guild}> is a group of friends who level and run dungeons together. Want an invite?"
-
--- Used in place of an opener for a class the guild is short of (/torchcall need).
-ns.NEED_TEMPLATE = "Hey {name}, <{guild}> is short a {class} for dungeons right now. Friends first, no application. Want to run with us?"
+ns.OLD_GROUP_TEMPLATE = "Good run, {name}. If you want a guild, <{guild}> is a group of friends who level and run dungeons together. Want an invite?"
+ns.OLD_NEED_TEMPLATE = "Hey {name}, <{guild}> is short a {class} for dungeons right now. Friends first, no application. Want to run with us?"
 
 -- The Discord, on its own, for the check-in to someone who has not joined it yet.
 ns.DISCORD = "discord.gg/passthetorch"

@@ -690,8 +690,17 @@ eq(TorchcallDB.templates[1], ns2.TEMPLATES[1], "an untouched old default becomes
 eq(TorchcallDB.templates[2], "My own pitch for {name}.", "a message you wrote is kept")
 eq(TorchcallDB.templates[3], ns2.TEMPLATES[3], "the third old default too")
 eq(TorchcallDB.templates[4], "A fourth one.", "extra messages are kept")
+-- the same for someone still on the 1.2 to 1.6.0 openers
+TorchcallDB = { templates = { ns.OLD_TEMPLATES_2[1], "Mine, {name}.", ns.OLD_TEMPLATES_2[3], ns.OLD_TEMPLATES_2[4] },
+                groupmsg = ns.OLD_GROUP_TEMPLATE, needmsg = "my need line" }
+ns2 = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall")
+eq(TorchcallDB.templates[1], ns2.TEMPLATES[1], "an untouched opener is swapped for the new one")
+eq(TorchcallDB.templates[2], "Mine, {name}.", "an opener you wrote is kept")
+eq(TorchcallDB.templates[4], ns2.TEMPLATES[4], "the fourth too")
+eq(TorchcallDB.groupmsg, ns2.GROUP_TEMPLATE, "the untouched group line is swapped")
+eq(TorchcallDB.needmsg, "my need line", "a needed-class line you wrote is kept")
 for i, t in ipairs(ns2.TEMPLATES) do
-  check(#t < #ns2.OLD_TEMPLATES[1], "new message " .. i .. " is shorter than the old opener")
   check(t:find("?", 1, true), "new message " .. i .. " asks a question")
   check(not t:find("\226\128\148", 1, true) and not t:find("\226\128\147", 1, true), "new message " .. i .. " has no long dashes")
   check(not t:find("{zone}", 1, true), "new message " .. i .. " does not depend on a zone the search may not give")
@@ -715,9 +724,15 @@ for _, a in ipairs(ns.ANSWERS) do
 end
 check(#ns.Render(ns.CHECKIN, longP) <= 255 and #ns.Render(ns.GROUP_TEMPLATE, longP) <= 255, "check-in and group lines fit")
 for i, t in ipairs(ns.TEMPLATES) do
-  check(not t:find("http", 1, true) and not t:find("discord", 1, true) and not t:find("%.gg"), "opener " .. i .. " carries no Discord invite")
-  check(i == 4 or not t:find("%.dev"), "only the fourth opener carries the site")
-  check(#ns.Render(t, longP) <= 160, "opener " .. i .. " is short")
+  check(t:find("discord.gg/passthetorch", 1, true), "opener " .. i .. " carries the Discord")
+  check(t:find("passthetorch.pages.dev", 1, true), "opener " .. i .. " carries the site")
+  check(not t:find("http", 1, true), "opener " .. i .. " has no clickable-looking address")
+  check(t:lower():find("casual", 1, true) and (t:lower():find("veteran", 1, true) or t:lower():find("experienced", 1, true)), "opener " .. i .. " says who is in the guild")
+  check(#ns.Render(t, longP) <= 255, "opener " .. i .. " fits one whisper")
+end
+check(#ns.Render(ns.NEED_TEMPLATE, longP) <= 255, "the needed-class line fits")
+for _, t in ipairs({ ns.GROUP_TEMPLATE, ns.NEED_TEMPLATE }) do
+  check(t:find("discord.gg/passthetorch", 1, true) and t:find("passthetorch.pages.dev", 1, true), "the group and needed-class lines carry both links")
 end
 
 -- what a reply is asking for

@@ -134,7 +134,7 @@ M.guard = function(kind, target, msg)
       if rec.checked[target] then fail("check-in sent twice to " .. target) end
       rec.checked[target] = time()
       totals.checkins = totals.checkins + 1
-    elseif msg:find("discord.gg", 1, true) then
+    elseif msg:find("^FOLLOWUP") then
       if not rec.replied[target] then fail("follow-up to someone who never answered: " .. target .. " :: " .. msg) end
       if rec.linked[target] then fail("follow-up sent twice to " .. target) end
       rec.linked[target] = true
@@ -210,6 +210,7 @@ local function login(wipe)
   -- lines the guard can tell apart from an opener
   for _, key in ipairs(TOPICS) do db.answers[key] = "ANS:" .. key .. " for {name}" end
   db.checkin, db.groupmsg = "CHECKIN {name}", "GROUP {name}"
+  db.reply = "FOLLOWUP discord.gg/passthetorch" -- the openers carry the link too, so the follow-up is told apart by this
   if wipe then M.advance(30) end -- fresh data has no memory of the last whisper; a real wipe is never that fast
   totals.relogs = totals.relogs + 1
 end
@@ -377,7 +378,7 @@ local STEP = {
                                    "What we are", "How it started", "Time and real life", "Raids", "PvP", "Leveling", "New or returning", "Offer a run",
                                    "Discord link", "Send the guild invite", "They said no", "Close" })) end,
   function() if chance(0.2) then db.templates[R(1, #db.templates)] = pick({ "Hi {name}", "", string.rep("y", 300), "{bogus} {zone} {level} {class} <{guild}>" }) end end,
-  function() if chance(0.1) then db.reply = pick({ "join discord.gg/passthetorch", "discord.gg/x " .. string.rep("w", 300) }) end end,
+  function() if chance(0.1) then db.reply = pick({ "FOLLOWUP join discord.gg/passthetorch", "FOLLOWUP discord.gg/x " .. string.rep("w", 300) }) end end,
   function() if chance(0.03) then login(false) end end,
 }
 
