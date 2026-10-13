@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.5.1"
+ns.VERSION = "1.6.0"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -376,7 +376,8 @@ function ns.SetSort(key)
 end
 
 -- kind "new" = waiting for a first contact and passing the filters (people who answered
--- always show, and come first); kind "contacted" = everyone already reached.
+-- always show, and come first); kind "contacted" = everyone already reached who has not
+-- joined; kind "joined" = everyone who has, those still owed a welcome first.
 -- Also returns how many waiting players the filters are hiding.
 function ns.List(kind)
   dropStale()
@@ -388,7 +389,7 @@ function ns.List(kind)
       elseif p.status == "new" then
         if matches(p) then rows[#rows + 1] = p else hidden = hidden + 1 end
       end
-    elseif STATUS_ORDER[p.status] and not answered(p) then
+    elseif STATUS_ORDER[p.status] and not answered(p) and (p.status == "joined") == (kind == "joined") then
       rows[#rows + 1] = p
     end
   end
@@ -398,6 +399,7 @@ function ns.List(kind)
     if kind == "new" and answered(a) ~= answered(b) then return answered(a) end
     if kind == "new" and (a.ran and true or false) ~= (b.ran and true or false) then return a.ran and true or false end
     if kind == "new" and needed(a) ~= needed(b) then return needed(a) end
+    if kind == "joined" and ns.CanWelcome(a) ~= ns.CanWelcome(b) then return ns.CanWelcome(a) end
     local x, y = key(a), key(b)
     if x ~= y then
       if up then return x < y end
@@ -899,8 +901,8 @@ end
 
 function ns.Render(template, p)
   local words = {
-    name = (p.name:match("^(%S+)")) or p.name,
-    fullname = p.name,
+    name = p.first or (p.name:match("^(%S+)")) or p.name,
+    fullname = p.first or p.name,
     level = tostring(p.level or ""),
     class = p.classStr or (p.class and className(p.class)) or "",
     zone = p.zone or "",
@@ -1204,63 +1206,107 @@ function ns.TemplateStat(key, field)
   return t
 end
 
--- A recruit of yours joined and the welcome has to come from a press: who is waiting for one.
--- Offered for half an hour; after that the moment has passed and the row button is still there.
-local OFFER_FOR = 1800
-function ns.PendingWelcome()
-  local best
+-- The welcome. It is said once per player, in guild chat, and it never stands in the way of
+-- anything else: whoever is owed one sits on the Joined tab with a button until it is said or
+-- the moment has passed.
+local WELCOME_FOR = 6 * 3600
+local function canWelcome(p)
+  return p.status == "joined" and not p.welcomed and time() - (p.t or 0) < WELCOME_FOR
+end
+ns.CanWelcome = canWelcome
+
+-- Your own recruits still owed a welcome, longest wait first.
+function ns.WelcomeWaiting()
+  local list = {}
   for _, p in pairs(TorchcallDB.prospects) do
-    if p.status == "joined" and not p.by and not p.welcomed and p.greet and time() - p.greet < OFFER_FOR
-      and (not best or p.greet < best.greet) then best = p end
+    if canWelcome(p) and not p.by then list[#list + 1] = p end
   end
-  return best
+  table.sort(list, function(a, b) if a.t ~= b.t then return a.t < b.t end return a.name < b.name end)
+  return list
 end
 
 local function offerWelcome(p)
   if not p.greet then
-    ns.Print(("Press your Next key or the Welcome button to greet %s in guild chat."):format(p.name))
+    ns.Print(("%s is waiting for a welcome: the Joined tab, or /torchcall welcome."):format(p.name))
   end
   p.greet = p.greet or time()
-  if ns.UI and ns.UI.OfferWelcome then ns.UI.OfferWelcome() end
+  changed()
 end
 
--- One line in guild chat for someone who just joined. Once per player, from a click.
+local function firstName(p) return (p.name:match("^(%S+)")) or p.name end
+
+-- "Ann", "Ann and Bo", "Ann, Bo and Cy"
+local function nameList(people)
+  local names = {}
+  for i, p in ipairs(people) do names[i] = firstName(p) end
+  if #names < 2 then return names[1] or "" end
+  return table.concat(names, ", ", 1, #names - 1) .. " and " .. names[#names]
+end
+
 local lastWelcome = -1000
 local lastWelcomed, lastWelcomedAt, lastWelcomeBefore
-function ns.Welcome(name)
+local function sayWelcome(people)
   local db = TorchcallDB
-  local p = db.prospects[name]
-  if not p or p.status ~= "joined" then return false, "That is for someone who just joined." end
-  if p.welcomed then return false, name .. " was already welcomed." end
   if not myGuild() then return false, "You are not in a guild." end
   if lockedDown() then return false, "The game holds addon chat in here (instance or match). Try again outside." end
   local wait = db.opts.gap - (GetTime() - lastWelcome)
   if wait > 0 then return false, ("Easy. Next welcome in %d seconds."):format(math.ceil(wait)) end
-  local text = ns.Render(db.welcome, p)
-  if text == "" then return false, "The welcome line is empty. Write one on the Message tab." end
-  if #text > 255 then return false, "The welcome line is longer than the game allows (255)." end
+  if not db.welcome:find("%S") then return false, "The welcome line is empty. Write one on the Message tab." end
+  -- as many as one line holds; the rest keep their button
+  local said, text = {}, nil
+  for i, p in ipairs(people) do
+    said[i] = p
+    local line = ns.Render(db.welcome, #said == 1 and p or { name = p.name, first = nameList(said), level = p.level })
+    if #line > 255 then said[i] = nil break end
+    text = line
+  end
+  if not text then return false, "The welcome line is longer than the game allows (255)." end
   local ok, why = sendChat(text, "GUILD")
   if not ok then return false, why end
-  lastWelcomed, lastWelcomedAt, lastWelcomeBefore = p, GetTime(), lastWelcome
+  lastWelcomed, lastWelcomedAt, lastWelcomeBefore = said, GetTime(), lastWelcome
   lastWelcome = GetTime()
-  p.welcomed = true
+  for _, p in ipairs(said) do p.welcomed = true end
   changed()
-  if ns.UI and ns.UI.OfferWelcome then ns.UI.OfferWelcome() end
-  return true
+  return true, nil, #said
+end
+
+-- One line in guild chat for someone who just joined. Once per player.
+function ns.Welcome(name)
+  local p = TorchcallDB.prospects[name]
+  if not p or p.status ~= "joined" then return false, "That is for someone who just joined." end
+  if p.welcomed then return false, name .. " was already welcomed." end
+  local ok, why = sayWelcome({ p })
+  return ok, why
+end
+
+-- One line in guild chat that greets every recruit of yours still owed a welcome, by name.
+-- One press, one message: five people joining together are not five lines of guild chat.
+function ns.WelcomeAll()
+  local waiting = ns.WelcomeWaiting()
+  if #waiting == 0 then return false, "Nobody is waiting for a welcome." end
+  local ok, why, count = sayWelcome(waiting)
+  if not ok then return false, why end
+  return true, #waiting > count and ("Welcomed %d. %d more did not fit on the line: press again in a few seconds."):format(count, #waiting - count)
+    or ("Welcomed %s."):format(count == 1 and waiting[1].name or (count .. " recruits"))
 end
 
 -- The game stopped something this addon did by itself. If that was a welcome, it never reached
--- guild chat: take the mark back, stop trying by timer, and ask for one press instead.
+-- guild chat: take the mark back, stop trying by timer, and leave it to the Joined tab.
 local function actionRefused(addon, what)
   if addon ~= ADDON then return end
   ns.Log("refused", tostring(what))
   chatRefused = true
-  local p = lastWelcomed
-  if p and GetTime() - lastWelcomedAt < 3 then
+  -- a search or an invite being stopped says nothing about the welcome before it
+  if type(what) == "string" and (what:find("Who", 1, true) or what:find("Invite", 1, true)) then return end
+  local said = lastWelcomed
+  if said and GetTime() - lastWelcomedAt < 3 then
     -- the refusal arrived after the call had already returned
-    p.welcomed, lastWelcome, lastWelcomed = nil, lastWelcomeBefore, nil
+    lastWelcome, lastWelcomed = lastWelcomeBefore, nil
     TorchcallDB.opts.pressOnly = true
-    offerWelcome(p)
+    for _, p in ipairs(said) do
+      p.welcomed = nil
+      offerWelcome(p)
+    end
     changed()
   end
 end
@@ -1695,8 +1741,9 @@ function handlers.CHAT_MSG_SYSTEM(text)
                 offerWelcome(p)
                 return
               end
-              -- two people joined together, or the game is holding chat: one more try, then it is the button's job
-              if not sent and again then C_Timer.After((TorchcallDB.opts.gap or 4) + 2, function() greet(false) end) end
+              -- two people joined together, or the game is holding chat: one more try, then it is the Joined tab's job
+              if not sent and again then C_Timer.After((TorchcallDB.opts.gap or 4) + 2, function() greet(false) end)
+              elseif not sent then offerWelcome(p) end
             end
             C_Timer.After(4, function() greet(true) end)
           end

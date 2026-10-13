@@ -280,6 +280,8 @@ local STEP = {
   function() press(ns.Invite, knownName("whispered")) end,
   function() press(ns.Welcome, knownName()) end,
   function() press(ns.Welcome, knownName("joined")) end,
+  function() press(ns.WelcomeAll) end,
+  function() press(Torchcall_KeyWelcome) end,
   function() press(ns.Skip, knownName()) end,
   function() if chance(0.3) then press(ns.Forget, knownName()) end end,
   function() ns.ToggleClass(chance(0.25) and nil or pick(CLASSES)) end,

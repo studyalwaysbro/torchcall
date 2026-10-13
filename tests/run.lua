@@ -651,7 +651,7 @@ M.advance(6)
 
 -- 13h. key bindings file ------------------------------------------------------------------
 local binds = M.bindings("Torchcall")
-eq(#binds, 3, "three bindings")
+eq(#binds, 4, "four bindings")
 for _, bnd in ipairs(binds) do
   check(_G["BINDING_NAME_" .. bnd.name] ~= nil, "binding " .. bnd.name .. " has a display name")
   eq(bnd.category, "ADDONS", "binding " .. bnd.name .. " is filed under AddOns")
@@ -1371,20 +1371,28 @@ eq(ns.errors, nil, "no errors in the welcome section")
 -- a client that refuses chat sent by a timer: nothing is marked sent, and one press does it instead
 M.pressOnly = true
 db.opts.autowelcome = true
+for _, p in pairs(db.prospects) do if p.status == "joined" then p.welcomed = true end end
 db.prospects["Held Hank"] = { name = "Held Hank", status = "invited", t = time(), level = 12 }
 g0 = #M.sentChat
 M.fire("CHAT_MSG_SYSTEM", "Held Hank has joined the guild.") M.advance(5)
 eq(#M.sentChat, g0, "the game refused the timer's welcome")
 check(not db.prospects["Held Hank"].welcomed, "so he is not marked welcomed")
 check(db.opts.pressOnly, "and the addon stops trying by timer")
-eq(ns.PendingWelcome() and ns.PendingWelcome().name, "Held Hank", "he is waiting for a press")
-check(M.click("Welcome Held"), "a Welcome button is on screen")
+local function waitingNames()
+  local names = {}
+  for i, p in ipairs(ns.WelcomeWaiting()) do names[i] = p.name end
+  return table.concat(names, ",")
+end
+eq(waitingNames(), "Held Hank", "he is waiting for a press")
+if not (TorchcallFrame and TorchcallFrame:IsShown()) then SlashCmdList["TORCHCALL"]("") end
+check(M.click("Joined (1 new)"), "the Joined tab says one is new")
+check(M.click("Welcome all (1)"), "and one press greets him")
 eq(#M.sentChat, g0 + 1, "one press sends it") check(M.sentChat[#M.sentChat][1]:find("Held", 1, true), "to him")
-check(db.prospects["Held Hank"].welcomed, "now he is marked") eq(ns.PendingWelcome(), nil, "and nobody is waiting")
-check(not M.click("Welcome Held"), "the button is gone")
+check(db.prospects["Held Hank"].welcomed, "now he is marked") eq(waitingNames(), "", "and nobody is waiting")
+check(not M.click("Welcome all"), "the button has nothing left to do")
 M.advance(60)
 eq(#M.sentChat, g0 + 1, "the retry timer does not say it twice")
--- the next one: no timer attempt at all, and the Next key does it before anything else
+-- the next one: no timer attempt at all, and the Next key is still the next player
 db.prospects["Held Hattie"] = { name = "Held Hattie", status = "invited", t = time(), level = 12 }
 local r0 = 0 for _, line in ipairs(db.log) do if line:find("refused", 1, true) then r0 = r0 + 1 end end
 M.fire("CHAT_MSG_SYSTEM", "Held Hattie has joined the guild.") M.advance(30)
@@ -1394,29 +1402,88 @@ eq(#M.sentChat, g0 + 1, "nothing sent yet")
 db.prospects["Next Ned"] = { name = "Next Ned", status = "new", t = time(), seen = time(), level = 12, class = "MAGE", ran = true }
 check(ns.NextTarget(), "somebody is waiting for the Next key too")
 M.advance(10)
+db.opts.mode = "invite"
 local i1 = #M.invited
 Torchcall_KeyNext()
-eq(#M.sentChat, g0 + 2, "the Next key welcomes her") eq(M.sentChat[#M.sentChat][2], "GUILD", "in guild chat")
-eq(#M.invited, i1, "and that press does nothing else")
+eq(#M.invited, i1 + 1, "a welcome waiting does not hold the Next key: the invite goes out")
+eq(M.invited[#M.invited], "Next Ned", "to the next player")
+check(not db.prospects["Held Hattie"].welcomed, "and she still has her welcome coming")
+-- a welcome the game will not take must never stop the invites behind it
+local keptWelcome = db.welcome
+db.welcome = ("x"):rep(300)
+M.advance(10)
+check(not ns.WelcomeAll(), "a welcome line the game will not take: no welcome")
+db.prospects["Next Nell"] = { name = "Next Nell", status = "new", t = time(), seen = time(), level = 12, class = "MAGE", ran = true }
+i1 = #M.invited
+Torchcall_KeyNext()
+eq(#M.invited, i1 + 1, "the Next key still invites")
+db.welcome = keptWelcome
+db.opts.mode = "whisper"
+-- the row has its own button, and the welcome key greets everyone at once
+db.prospects["Held Hugo"] = { name = "Held Hugo", status = "invited", t = time(), level = 12 }
+db.prospects["Held Hilda"] = { name = "Held Hilda", status = "invited", t = time(), level = 12 }
+M.fire("CHAT_MSG_SYSTEM", "Held Hugo has joined the guild.") M.fire("CHAT_MSG_SYSTEM", "Held Hilda has joined the guild.")
+M.advance(20)
+eq(#ns.WelcomeWaiting(), 3, "three waiting")
+check(M.click("Joined (3 new)"), "the tab counts them")
+local joinedRows = ns.List("joined")
+check(ns.CanWelcome(joinedRows[1]) and ns.CanWelcome(joinedRows[3]), "those owed a welcome are at the top of the Joined tab")
+for _, p in ipairs(ns.List("contacted")) do check(p.status ~= "joined", "nobody who joined is left on the Contacted tab") end
+g0 = #M.sentChat
+local rowButton
+for _, f in ipairs(M.frames) do
+  local shown, up = not f.__off, f
+  while shown and up do shown = up.__shown ~= false up = up.__parent end
+  if shown and f.__kind == "Button" and f.__text == "Welcome" and not rowButton then rowButton = f end
+end
+check(rowButton, "a row has its own Welcome button") rowButton.__scripts.OnClick(rowButton, "LeftButton")
+eq(#M.sentChat, g0 + 1, "greets one player") eq(#ns.WelcomeWaiting(), 2, "two left")
+Torchcall_KeyWelcome()
+eq(#M.sentChat, g0 + 1, "inside the gap the key sends nothing")
+M.advance(10)
+Torchcall_KeyWelcome()
+eq(#M.sentChat, g0 + 2, "one press of the welcome key is one line") eq(#ns.WelcomeWaiting(), 0, "for everyone left")
+local both = M.sentChat[#M.sentChat][1]
+check(both:find(" and ", 1, true) and #both <= 255, "naming them together: " .. both)
+M.advance(10)
+check(not ns.WelcomeAll(), "nobody left: nothing to say") eq(#M.sentChat, g0 + 2, "and nothing said")
+-- more than a line holds: as many as fit, the rest keep their place
+for i = 1, 40 do
+  db.prospects["Crowdmember" .. i .. " Longsurname"] = { name = "Crowdmember" .. i .. " Longsurname", status = "joined", t = time() - i, level = 12 }
+end
+g0 = #M.sentChat
+local okAll, said = ns.WelcomeAll()
+check(okAll and said:find("did not fit", 1, true), "a crowd: " .. tostring(said))
+check(#M.sentChat[#M.sentChat][1] <= 255, "the line fits the game's limit")
+local left = #ns.WelcomeWaiting()
+check(left > 0 and left < 40, "some greeted, some still waiting (" .. left .. ")")
+local presses = 0
+while #ns.WelcomeWaiting() > 0 and presses < 20 do M.advance(10) ns.WelcomeAll() presses = presses + 1 end
+eq(#ns.WelcomeWaiting(), 0, "a few more presses reach all of them")
+for i = 1, 40 do db.prospects["Crowdmember" .. i .. " Longsurname"] = nil end
 -- the refusal arriving after the call returned is handled the same way
 db.opts.pressOnly = nil
 db.prospects["Late Lou"] = { name = "Late Lou", status = "invited", t = time(), level = 12 }
 M.pressOnly = false
+M.advance(10)
 M.fire("CHAT_MSG_SYSTEM", "Late Lou has joined the guild.") M.advance(5)
 check(db.prospects["Late Lou"].welcomed, "sent, as far as the addon knows")
 M.fire("ADDON_ACTION_BLOCKED", "Torchcall", "SendChatMessage()")
 check(not db.prospects["Late Lou"].welcomed, "a late refusal takes the mark back")
-eq(ns.PendingWelcome() and ns.PendingWelcome().name, "Late Lou", "and asks for the press")
+eq(waitingNames(), "Late Lou", "and he waits on the Joined tab")
 M.fire("ADDON_ACTION_BLOCKED", "SomeOtherAddon", "CastSpellByName()")
-check(M.click("Welcome Late"), "pressed") check(db.prospects["Late Lou"].welcomed, "welcomed")
+M.advance(10)
+check(M.click("Welcome all (1)"), "pressed") check(db.prospects["Late Lou"].welcomed, "welcomed")
 M.fire("ADDON_ACTION_BLOCKED", "SomeOtherAddon", "CastSpellByName()")
 check(db.prospects["Late Lou"].welcomed, "another addon being stopped is not our welcome being stopped")
--- an offer does not last for ever
+M.fire("ADDON_ACTION_BLOCKED", "Torchcall", "C_FriendList.SendWho()")
+check(db.prospects["Late Lou"].welcomed, "nor is a search of ours being stopped")
+-- a welcome does not wait for ever, and an old one never hides the check-in
 db.opts.pressOnly = true
 db.prospects["Old Ollie"] = { name = "Old Ollie", status = "invited", t = time(), level = 12 }
 M.fire("CHAT_MSG_SYSTEM", "Old Ollie has joined the guild.") M.advance(10)
-check(ns.PendingWelcome(), "offered") M.advance(1900)
-eq(ns.PendingWelcome(), nil, "half an hour later the offer has passed") check(not M.click("Welcome Old"), "and the button with it")
+eq(waitingNames(), "Old Ollie", "waiting") M.advance(7 * 3600)
+eq(waitingNames(), "", "hours later the moment has passed") check(not ns.CanWelcome(db.prospects["Old Ollie"]), "and the row button with it")
 slash("autowelcome on") check(not db.opts.pressOnly, "autowelcome on asks the game again")
 eq(ns.errors, nil, "no errors in the press-only section")
 M.pressOnly = nil db.opts.pressOnly = nil

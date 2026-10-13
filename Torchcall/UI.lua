@@ -492,15 +492,26 @@ local function buildMain()
   f.note:SetWordWrap(false)
 
   f.tabs = {}
-  for i, label in ipairs({ "Prospects", "Contacted", "Message", "Answers" }) do
-    local b = makeButton(f, label, 120)
-    b:SetPoint("TOPLEFT", 14 + (i - 1) * 124, -132)
+  for i, label in ipairs({ "Prospects", "Contacted", "Joined", "Message", "Answers" }) do
+    local b = makeButton(f, label, 98)
+    b:SetPoint("TOPLEFT", 14 + (i - 1) * 102, -132)
     b:SetScript("OnClick", function()
       currentTab, offset = i, 0
       UI.Refresh()
     end)
     f.tabs[i] = b
   end
+  -- on the Joined tab this corner holds the one press that greets everyone still owed a welcome
+  f.welcomeAll = makeButton(f, "Welcome all", 150)
+  f.welcomeAll:SetPoint("TOPRIGHT", -16, -132)
+  f.welcomeAll:SetScript("OnClick", function() act(ns.WelcomeAll) end)
+  f.welcomeAll:SetScript("OnEnter", function(self)
+    showTooltip(self, "Welcome all",
+      "One line in guild chat that greets every recruit of yours still waiting, by name.",
+      "The line is the one on the Message tab. A row's own Welcome button greets just that player.")
+  end)
+  f.welcomeAll:SetScript("OnLeave", function() GameTooltip:Hide() end)
+  f.welcomeAll:Hide()
   f.group = makeButton(f, "Add my group", 150)
   f.group:SetPoint("TOPRIGHT", -16, -132)
   f.group:SetScript("OnClick", function() act(ns.AddGroup) end)
@@ -705,8 +716,19 @@ function UI.Refresh()
     if i == currentTab then b:LockHighlight() else b:UnlockHighlight() end
   end
   local due = #ns.DueCheckIns()
-  main.tabs[2]:SetText(due > 0 and ("Contacted " .. ORANGE .. "(" .. due .. " due)|r") or "Contacted")
-  local messageTab, answersTab = currentTab == 3, currentTab == 4
+  local waiting = #ns.WelcomeWaiting()
+  main.tabs[3]:SetText(waiting > 0 and ("Joined " .. GREEN .. "(" .. waiting .. " new)|r")
+    or due > 0 and ("Joined " .. ORANGE .. "(" .. due .. " due)|r") or "Joined")
+  local joinedTab, messageTab, answersTab = currentTab == 3, currentTab == 4, currentTab == 5
+  if joinedTab then
+    main.group:Hide()
+    main.welcomeAll:Show()
+    main.welcomeAll:SetText(waiting > 0 and ("Welcome all (" .. waiting .. ")") or "Welcome all")
+    if waiting > 0 then main.welcomeAll:Enable() else main.welcomeAll:Disable() end
+  else
+    main.welcomeAll:Hide()
+    main.group:Show()
+  end
   if messageTab then main.message:Show() else main.message:Hide() end
   if answersTab then main.answers:Show() else main.answers:Hide() end
   if messageTab or answersTab then main.list:Hide() else main.list:Show() end
@@ -726,7 +748,8 @@ function UI.Refresh()
     if not main.answers.edit:HasFocus() then main.answers.edit:SetText(line.get() or "") end
     UI.RefreshAnswers()
   else
-    local rows, hidden = ns.List(currentTab == 1 and "new" or "contacted")
+    local rows, hidden = ns.List(currentTab == 1 and "new" or (joinedTab and "joined" or "contacted"))
+    local inGuild = ns.MyGuild() ~= nil
     offset = math.max(0, math.min(offset, math.max(0, #rows - ROWS)))
     for r = 1, ROWS do
       local row, p = main.rows[r], rows[r + offset]
@@ -741,12 +764,14 @@ function UI.Refresh()
         if answered then status = ORANGE .. "ANSWERED|r" end
         if p.status == "new" and ns.Needed(p) then status = GOLD .. "class we need|r" end
         if p.status == "new" and p.ran then status = GREEN .. "played with|r" end
+        if p.status == "joined" and p.welcomed then status = GREEN .. "welcomed|r" end
+        if ns.CanWelcome(p) then status = GOLD .. "say hello|r" end
         if p.stayed == false then status = GREY .. "joined, then left|r" end
         row.cells[5]:SetText(status .. GREY .. " " .. ago(p.status == "new" and p.seen or p.t) .. "|r")
         -- one button per row, for the one thing worth doing next with this player
         local talking = p.replied and (p.status == "whispered" or p.status == "invited" or p.status == "joined")
         if p.status == "new" then row.action = "whisper"
-        elseif p.status == "joined" and not p.welcomed and canInvite then row.action = "welcome"
+        elseif ns.CanWelcome(p) and inGuild then row.action = "welcome"
         elseif ns.CheckInDue(p) then row.action = "checkin"
         elseif talking and #ns.AnswersLeft(p.name) > 0 then row.action = "talk"
         else row.action = nil end
@@ -765,7 +790,9 @@ function UI.Refresh()
       end
     end
     if #rows == 0 then
-      if currentTab ~= 1 then
+      if joinedTab then
+        main.empty:SetText("Nobody has joined yet. When someone does, their welcome waits here.")
+      elseif currentTab ~= 1 then
         main.empty:SetText("Nobody contacted yet.")
       elseif hidden > 0 then
         main.empty:SetText(("Nobody matches your level and class filters. %d waiting are hidden by them."):format(hidden))
@@ -900,7 +927,8 @@ local function printHelp()
   print("  /torchcall skip <name>     never contact this player    /torchcall forget <name>   drop them from the list")
   print("  /torchcall cap <number>    new people you may contact per hour (now " .. opts.hourly .. ")")
   print("  /torchcall cap day <number|off>   and per day (now " .. (opts.daily > 0 and opts.daily or "no limit") .. ")")
-  print("  /torchcall autowelcome     a one-press Welcome when your recruit joins (sent by itself where the game allows), on or off (now " .. (opts.autowelcome and "on" or "off") .. ")")
+  print("  /torchcall welcome [name]  greet in guild chat everyone who joined and is still waiting, or one player")
+  print("  /torchcall autowelcome     send the welcome by itself when your recruit joins, where the game allows it, on or off (now " .. (opts.autowelcome and "on" or "off") .. ")")
   print("  /torchcall pitch           whisper the opener before an invite to someone new, on or off (now " .. (opts.pitch and "on" or "off") .. ")")
   print("  /torchcall need <classes>  classes the guild is short of (healers, tanks, priest mage, off): they come first")
   print("  /torchcall warm            who answered and is still waiting    /torchcall board   recruiters this week")
@@ -1027,7 +1055,7 @@ local function slash(input)
     -- switching it on again is also how you ask for another try after the game refused one
     if opts.autowelcome and rest:lower() == "on" then opts.pressOnly = nil end
     ns.Print(not opts.autowelcome and "The welcome line is now only sent when you press Welcome."
-      or opts.pressOnly and "When someone you recruited joins, a Welcome button appears: one press, or your Next key. This game will not let an addon speak by itself."
+      or opts.pressOnly and "When someone you recruited joins, they wait on the Joined tab for one press. This game will not let an addon speak by itself."
       or "When someone you recruited joins, the welcome line goes to guild chat by itself.")
   elseif cmd == "pitch" then
     if rest:lower() == "on" then opts.pitch = true elseif rest:lower() == "off" then opts.pitch = false else opts.pitch = not opts.pitch end
@@ -1086,8 +1114,9 @@ local function slash(input)
     end
     ns.Print(("Levels %d to %d."):format(opts.lo, opts.hi))
   elseif cmd == "welcome" then
-    local p = ns.FindProspect(rest)
-    if p then act(ns.Welcome, p.name) else ns.Print("Nobody called '" .. rest .. "' is on the list.") end
+    local p = rest ~= "" and ns.FindProspect(rest)
+    if rest == "" then act(ns.WelcomeAll)
+    elseif p then act(ns.Welcome, p.name) else ns.Print("Nobody called '" .. rest .. "' is on the list.") end
   elseif cmd == "skip" or cmd == "forget" then
     local p = ns.FindProspect(rest)
     if not p then
@@ -1148,16 +1177,10 @@ BINDING_HEADER_TORCHCALL = "Torchcall"
 BINDING_NAME_TORCHCALL_NEXT = "Whisper or invite the next player"
 BINDING_NAME_TORCHCALL_SEARCH = "Send the next who search"
 BINDING_NAME_TORCHCALL_TOGGLE = "Open or close the window"
+BINDING_NAME_TORCHCALL_WELCOME = "Welcome everyone who just joined"
 
 function Torchcall_KeyNext()
   if not (TorchcallDB and opts) then return end
-  -- a recruit of yours is waiting for a hello: that comes first, and it is this press's one message
-  local greet = ns.PendingWelcome()
-  if greet then
-    if act(ns.Welcome, greet.name) then ns.Print("Welcomed " .. greet.name .. ".") end
-    UI.OfferWelcome()
-    return
-  end
   local target = ns.NextTarget()
   if act(ns.Next) and target and not (main and main:IsShown()) then
     ns.Print((opts.mode == "invite" and "Invited " or "Whispered ") .. target.name .. ".")
@@ -1170,28 +1193,10 @@ function Torchcall_KeySearch()
   if not (main and main:IsShown()) then ns.Print(ns.searchNote) end
 end
 
--- One button in the middle of the screen while a recruit of yours waits for a welcome. The game
--- only lets an addon speak from a press, so this is the press.
-local greetButton
-function UI.OfferWelcome()
-  local p = TorchcallDB and ns.PendingWelcome()
-  if not p then
-    if greetButton then greetButton:Hide() end
-    return
-  end
-  if not greetButton then
-    greetButton = makeButton(UIParent, "", 240, 30)
-    greetButton:SetPoint("TOP", UIParent, "TOP", 0, -150)
-    greetButton:SetFrameStrata("HIGH")
-    greetButton:SetScript("OnClick", function()
-      local q = ns.PendingWelcome()
-      if q then act(ns.Welcome, q.name) end
-      UI.OfferWelcome()
-    end)
-    if C_Timer and C_Timer.NewTicker then C_Timer.NewTicker(60, function() if greetButton:IsShown() then UI.OfferWelcome() end end) end
-  end
-  greetButton:SetText("Welcome " .. ((p.name:match("^(%S+)")) or p.name))
-  greetButton:Show()
+-- The welcome has a key of its own, so the Next key is never anything but the next player.
+function Torchcall_KeyWelcome()
+  if not (TorchcallDB and opts) then return end
+  act(ns.WelcomeAll)
 end
 
 function UI.Init()
@@ -1208,7 +1213,7 @@ function UI.Init()
     C_Timer.After(20, function()
       local due = TorchcallDB and #ns.DueCheckIns() or 0
       if due > 0 then
-        ns.Print(("%d recruit%s joined a few days ago. A quick check-in is what keeps them: open the Contacted tab."):format(due, due == 1 and "" or "s"))
+        ns.Print(("%d recruit%s joined a few days ago. A quick check-in is what keeps them: open the Joined tab."):format(due, due == 1 and "" or "s"))
       end
       for _, key in ipairs({ "info", "motd" }) do
         local state = TorchcallDB and ns.GuildText(key)

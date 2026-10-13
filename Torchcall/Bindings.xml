@@ -8,4 +8,7 @@
 	<Binding name="TORCHCALL_TOGGLE" category="ADDONS">
 		Torchcall_OnCompartmentClick();
 	</Binding>
+	<Binding name="TORCHCALL_WELCOME" category="ADDONS">
+		Torchcall_KeyWelcome();
+	</Binding>
 </Bindings>
