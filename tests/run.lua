@@ -706,6 +706,26 @@ for i, t in ipairs(ns2.TEMPLATES) do
   check(not t:find("{zone}", 1, true), "new message " .. i .. " does not depend on a zone the search may not give")
 end
 
+-- 1.7.1: the hourly cap default moved from 30 to 60. An install still on the old
+-- default moves with it, once; any cap the user picked themselves is kept.
+TorchcallDB = { opts = { hourly = 30 } }
+ns2 = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall")
+eq(TorchcallDB.opts.hourly, 60, "an install on the old default of 30 moves to 60")
+check(TorchcallDB.opts.cap60, "and the move is marked so it never repeats")
+TorchcallDB = { opts = { hourly = 45 } }
+ns2 = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall")
+eq(TorchcallDB.opts.hourly, 45, "a cap the user picked is kept")
+TorchcallDB = { opts = { hourly = 30, cap60 = true } }
+ns2 = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall")
+eq(TorchcallDB.opts.hourly, 30, "30 picked after the move stays 30")
+TorchcallDB = {}
+ns2 = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+M.fire("ADDON_LOADED", "Torchcall")
+eq(TorchcallDB.opts.hourly, 60, "a fresh install starts at 60")
+
 
 -- 1.2: answers, rotation, played-together prospects, check-ins, who stayed ------------------------
 M.reset(true)

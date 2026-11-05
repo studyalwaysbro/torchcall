@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.7.0"
+ns.VERSION = "1.7.1"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -132,7 +132,13 @@ local function initDB()
   if o.pitch == nil then o.pitch = true end -- an invite to someone new is preceded by the opener, so they know who is asking
   if o.mode ~= "invite" then o.mode = "whisper" end -- what the Next button does
   o.template = o.template or 1
-  o.hourly = math.min(o.hourly or 30, 60) -- first contacts allowed per hour
+  o.hourly = math.min(o.hourly or 60, 60) -- first contacts allowed per hour, the most the addon allows
+  -- 1.7.1 moved the default from 30 up to the maximum. An install still sitting on the
+  -- old default moves with it, once; a cap picked on purpose (any other number) stays.
+  if not o.cap60 then
+    if o.hourly == 30 then o.hourly = 60 end
+    o.cap60 = true
+  end
   if type(o.daily) ~= "number" then o.daily = 100 end -- and per day; 0 means no daily limit
   o.gap = o.gap or 4             -- seconds between whispers
   o.lo, o.hi = o.lo or 1, o.hi or 60
