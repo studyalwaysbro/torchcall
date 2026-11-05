@@ -6,7 +6,7 @@ It finds players with no guild, opens with one short question, helps you answer 
 
 ## What it does
 
-- **Search by level and class.** Set a level range and pick any mix of the nine classes. Press Search and it asks the game who is online and keeps the players with no guild. All the classes you picked go out as one search, using the game's own class filter, so the fifty players that come back are the classes you asked for. Optionally limit it to your current zone.
+- **Search by level and class.** Set a level range and pick any mix of the nine classes. Press Search and it asks the game who is online and keeps the players with no guild. The class is carried in the search itself, so the players that come back are the classes you asked for, one short search per class. Optionally limit it to your current zone.
 - **It always shows you something.** One who search returns 50 players at most. When more are online, you get the first 50 at once and the rest is lined up as batches (by level, then class, then race): the button turns into **Continue (N left)** and counts down the few seconds the game makes you wait, so one more press gets the next batch. A search also brings the Prospects tab it is filling to the front, and that tab shows a live count, so the players you find are never hidden behind another tab.
 - **Filters that mean it.** The level range, the classes and the optional Latin-alphabet name filter are applied to every result by the addon itself, not just sent to the server. Change them any time and the list follows. The Next button only ever reaches players who pass them.
 - **Prospect list.** Name, level, class, zone. Whisper, Invite or Skip on every row. Press a column title to sort by it.
@@ -88,6 +88,6 @@ With Lua 5.1, from this folder:
 
 ## Status
 
-Built against Blizzard's Forever interface source, build 1.60.1. Searches, whispers, invites and join tracking have been used in the Forever beta. Everything new in 1.2 (answers, rotation, Add my group, check-ins, who stayed, guild window texts) passes the offline suite and has not been run in the game yet. If something breaks, `/torchcall log` shows what the addon saw.
+Built against Blizzard's Forever interface source, build 1.60.1. Searches, whispers, invites and join tracking have been used in the Forever beta. The live Forever client refuses the who search's class-filter table from an addon, so since 1.7.4 the class is asked for in the search words instead, one short search per class; if a client ever blocks it another way, the addon notices the refusal and switches to words on its own. Everything new in 1.2 (answers, rotation, Add my group, check-ins, who stayed, guild window texts) passes the offline suite. If something breaks, `/torchcall log` shows what the addon saw.
 
 Made by **The True Torchmen**. MIT license.

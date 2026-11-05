@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.7.3"
+ns.VERSION = "1.7.4"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -48,6 +48,20 @@ local function try(f, ...)
   if ok then return a, b, c, d end
 end
 ns.try = try
+
+-- Some clients (WoW Forever, project "camelot") make the structured class-filter argument of
+-- C_FriendList.SendWho a restricted one: passed from addon code it is blocked (an
+-- ADDON_ACTION_FORBIDDEN event, no error, nothing searched) and the who silently does nothing.
+-- On those clients we ask in words instead (c-"Mage" in the query text), which is the same call
+-- the game's own /who box makes and is never blocked. The self-heal below catches any client
+-- that blocks it without being named here.
+local WOW_PROJECT_CAMELOT_ID = 18
+local function filterTableBlocked()
+  local id = rawget(_G, "WOW_PROJECT_ID")
+  if id == nil then return false end
+  return id == rawget(_G, "WOW_PROJECT_CAMELOT") or id == WOW_PROJECT_CAMELOT_ID
+end
+ns.FilterTableBlocked = filterTableBlocked
 
 function ns.Print(msg)
   print("|cffff7d0aTorchcall:|r " .. tostring(msg))
@@ -150,6 +164,9 @@ local function initDB()
   -- into the search words, "local" filters here. See onWhoResults.
   -- "local" is a verdict on one session's answers, never carried into the next
   if o.whoMode ~= "include" and o.whoMode ~= "text" then o.whoMode = "exclude" end
+  -- On a client that blocks the class-filter table, the two filter-table modes cannot search at
+  -- all, so ask in words from the start. The class is still applied: queryText writes c-"Mage".
+  if (o.whoMode == "exclude" or o.whoMode == "include") and filterTableBlocked() then o.whoMode = "text" end
   if type(o.need) ~= "table" then o.need = {} end -- classes the guild is short of: class token = true
   if type(db.needmsg) ~= "string" then db.needmsg = ns.NEED_TEMPLATE end
   if type(db.board) ~= "table" then db.board = {} end     -- [recruiter] = { joined, stayed, week, t }
@@ -451,6 +468,11 @@ local sends = 0
 -- honouring that part of the query, so splitting by it would only repeat the same search.
 local classFilterBroken, raceFilterBroken = false, false
 local sendingOurs = false
+-- Set from inside a blocked SendWho. The client refuses the class-filter table with a
+-- synchronous ADDON_ACTION_FORBIDDEN event (no error, nothing searched), so the only reliable
+-- sign is that our own call is on the stack when it fires. Read right after the call, like
+-- chatRefused. See actionRefused and NextSearch.
+local whoRefused = false
 
 -- A who answer carries no sign of which search it belongs to. So when anything else sends
 -- a search while ours is out (you typing /who, the who window, another addon), ours is
@@ -507,6 +529,7 @@ end
 -- The filter table for a search, or nil when the search has no classes or this client is
 -- being asked in words instead.
 local function whoFilters(q)
+  if filterTableBlocked() then return nil end
   local mode, want = whoMode(), wantedClasses(q)
   if not want or (mode ~= "exclude" and mode ~= "include") then return nil end
   local ids = {}
@@ -614,11 +637,39 @@ function ns.NextSearch()
   setWhoToUi(true)
   local origin = Enum and Enum.SocialWhoOrigin and Enum.SocialWhoOrigin.Social
   sendingOurs = true
+  whoRefused = false
   local filters = whoFilters(q)
   local ok, err
   if filters then ok, err = pcall(C_FriendList.SendWho, queryText(q), origin, filters)
   else ok, err = pcall(C_FriendList.SendWho, queryText(q), origin) end
   sendingOurs = false
+  -- The client blocked the class-filter table (ADDON_ACTION_FORBIDDEN fired inside the call).
+  -- Switch to words for good, turn the plan into one search per class, and leave the next send
+  -- to the recruiter's next press. Nothing was searched, so the search stays at the front.
+  if whoRefused then
+    whoRefused = false
+    setWhoToUi(false)
+    if TorchcallDB.opts.whoMode ~= "text" and TorchcallDB.opts.whoMode ~= "local" then
+      TorchcallDB.opts.whoMode = "text"
+    end
+    local plan = {}
+    for _, item in ipairs(queue) do
+      if item.classes then
+        for _, token in ipairs(item.classes) do
+          local one = { lo = item.lo, hi = item.hi, class = token, race = item.race, zone = item.zone }
+          local dup = false
+          for _, kept in ipairs(plan) do if sameQuery(kept, one) then dup = true break end end
+          if not dup then plan[#plan + 1] = one end
+        end
+      else
+        plan[#plan + 1] = item
+      end
+    end
+    queue = plan
+    ns.Log("who", "class-filter table refused by the client, asking in words from now on")
+    note(("The game blocked that search's class filter, so Torchcall asks in words now. Press Continue (%d left)."):format(#queue))
+    return false
+  end
   if not ok then
     setWhoToUi(false)
     ns.Log("who", err)
@@ -1314,6 +1365,10 @@ local function actionRefused(addon, what)
   if addon ~= ADDON then return end
   ns.Log("refused", tostring(what))
   chatRefused = true
+  -- Our own who search is on the stack: this refusal is that search, not a welcome. On this
+  -- client the payload is "UNKNOWN()", so its text cannot name it; the call sentinel can. Return
+  -- before the welcome-revert so a blocked search never takes a welcome mark back.
+  if sendingOurs then whoRefused = true return end
   -- a search or an invite being stopped says nothing about the welcome before it
   if type(what) == "string" and (what:find("Who", 1, true) or what:find("Invite", 1, true)) then return end
   local said = lastWelcomed

@@ -147,6 +147,12 @@ local function freshFriendList() return {
       assert(type(filters) == "table" and type(filters.classIDs) == "table" and type(filters.raceIDs) == "table" and type(filters.uiMapIDs) == "table", "who filters need classIDs, raceIDs and uiMapIDs")
       for _, id in ipairs(filters.classIDs) do assert(type(id) == "number", "class IDs are numbers") end
     end
+    -- Forever blocks the class-filter table: a synchronous ADDON_ACTION_FORBIDDEN event, no
+    -- error, nothing searched. The two-argument (words only) call is not blocked.
+    if M.whoBlockFilters and filters ~= nil then
+      M.fire("ADDON_ACTION_FORBIDDEN", "Torchcall", "UNKNOWN()")
+      return
+    end
     if M.guard and text ~= "someone else's search" then M.guard("who", text) end
     M.sentWho[#M.sentWho + 1] = text
     M.sentFilters[#M.sentWho] = filters or false
@@ -257,6 +263,7 @@ function M.reset(wipe)
   M.lockdown, M.inGuild, M.canInvite, M.addonResult = false, true, true, 0
   M.group, M.raid, M.roster, M.rosterHidden = {}, false, {}, nil
   M.chatError, M.whoError, M.inviteError, M.who, M.whoTotal, M.whoToUi = nil, nil, nil, {}, nil, false
+  M.whoBlockFilters = nil
   UIParent = M.newFrame("Frame", "UIParent")
   Minimap = M.newFrame("Frame", "Minimap")
   GameTooltip = M.newFrame("GameTooltip", "GameTooltip")

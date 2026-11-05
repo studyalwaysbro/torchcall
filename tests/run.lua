@@ -1618,6 +1618,65 @@ do
   eq(ns.errors, nil, "no errors in the stale-note section")
 end
 
+-- On the WoW Forever client the class-filter table of C_FriendList.SendWho is refused, so a
+-- saved filter-table mode is migrated to words at load and searches go out as 2-arg calls.
+do
+  rawset(_G, "WOW_PROJECT_ID", 18) -- the Forever / camelot client
+  M.reset(true)
+  ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+  M.whoMode = nil -- let the saved config stand, no mock override
+  TorchcallDB = { opts = { whoMode = "exclude" } } -- a config saved before this fix
+  M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
+  db = TorchcallDB slash = SlashCmdList["TORCHCALL"]
+  eq(db.opts.whoMode, "text", "on the Forever client a saved filter-table mode is migrated to words")
+  ns.ToggleClass("MAGE")
+  M.advance(10)
+  check(ns.StartSearch(10, 20), "a class search starts on the Forever client")
+  local n = #M.sentWho
+  check(n >= 1, "the who search actually went out")
+  check(M.sentWho[n]:find('c-"', 1, true), "the class rides in the words of the search: " .. tostring(M.sentWho[n]))
+  eq(M.sentFilters[n], false, "no class-filter table is ever passed on the Forever client")
+  M.answerWho({ P("Mae Gee", "", 15, "MAGE") })
+  check(ns.Counts().new >= 1, "the search finds a prospect")
+  eq(ns.errors, nil, "no errors in the Forever-client section")
+  rawset(_G, "WOW_PROJECT_ID", nil)
+end
+
+-- An unrecognised client that still blocks the filter table at runtime: the addon catches the
+-- refusal (a synchronous ADDON_ACTION_FORBIDDEN while our own call is on the stack), switches to
+-- words for good, rebuilds the plan one class per search, sends nothing itself, and says so.
+do
+  rawset(_G, "WOW_PROJECT_ID", nil) -- a client we do not name up front
+  M.reset(true)
+  ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+  M.whoMode = nil -- real default is the filter-table mode
+  M.whoBlockFilters = true -- but this client refuses the table, like Forever
+  M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
+  db = TorchcallDB slash = SlashCmdList["TORCHCALL"]
+  eq(db.opts.whoMode, "exclude", "an unrecognised client starts in the filter-table mode")
+  -- a recruit welcomed moments ago must not be un-welcomed by a who refusal
+  db.prospects["Old Friend"] = { name = "Old Friend", level = 20, classStr = "Mage", class = "MAGE",
+    race = "Orc", zone = "Durotar", seen = M.wall, status = "joined", welcomed = M.wall }
+  local keptWelcome = db.prospects["Old Friend"].welcomed
+  ns.ToggleClass("MAGE") ns.ToggleClass("ROGUE")
+  M.advance(10)
+  local before = #M.sentWho
+  check(not ns.StartSearch(10, 20), "the first filter-table search is refused, so it reports no send")
+  eq(#M.sentWho, before, "nothing was actually searched on the blocked call")
+  eq(db.opts.whoMode, "text", "the block flips the addon to words for good")
+  check(ns.QueueSize() >= 2, "the two-class plan became one search per class (" .. ns.QueueSize() .. ")")
+  check(ns.searchNote:find("asks in words", 1, true), "it tells the recruiter in one line: " .. ns.searchNote)
+  eq(db.prospects["Old Friend"].welcomed, keptWelcome, "a who refusal never takes back a recruit's welcome")
+  M.advance(6)
+  check(ns.NextSearch(), "the recruiter's next press sends in words")
+  local n = #M.sentWho
+  check(M.sentWho[n]:find('c-"', 1, true) and M.sentFilters[n] == false, "and it is a words search, no table: " .. tostring(M.sentWho[n]))
+  M.answerWho({ P("Mae Gee", "", 15, "MAGE") })
+  check(ns.Counts().new >= 1, "the fallback search finds prospects")
+  eq(ns.errors, nil, "no errors in the self-heal section")
+  M.whoBlockFilters = nil
+end
+
 -- the version the addon reports is the version on the box
 do
   local f = assert(io.open("Torchcall/Torchcall.toc"))
