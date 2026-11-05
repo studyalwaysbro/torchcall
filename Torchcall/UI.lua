@@ -1145,12 +1145,12 @@ local function slash(input)
     end
   elseif cmd == "cap" then
     local n = tonumber(rest)
-    if n and n >= 1 and n <= 60 then
+    if n and n >= 1 and n <= 120 then
       opts.hourly = math.floor(n)
       ns.Print("You can now contact " .. opts.hourly .. " new people an hour.")
       UI.Refresh()
     else
-      ns.Print("Give a number from 1 to 60. It is " .. opts.hourly .. " now.")
+      ns.Print("Give a number from 1 to 120. It is " .. opts.hourly .. " now.")
     end
   elseif cmd == "clear" then
     for name, p in pairs(db.prospects) do

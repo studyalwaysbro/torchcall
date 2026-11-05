@@ -365,7 +365,7 @@ check(M.click("Skip"), "row skip button")
 for _, cmd in ipairs({ "help", "stats", "search", "next", "cap 20", "cap x", "cap 500", "skip Nobody", "forget Ned Orr", "minimap", "minimap", "log", "clear", "nonsense" }) do
   SlashCmdList["TORCHCALL"](cmd)
 end
-eq(db.opts.hourly, 20, "cap command, and a cap over 60 is refused")
+eq(db.opts.hourly, 20, "cap command, and a cap over 120 is refused")
 eq(ns.Counts().new, 0, "clear empties the waiting list")
 check(db.prospects["Ivy Kerr"] ~= nil, "clear keeps contacted players")
 for _, line in ipairs(M.printed) do check(not line:find("command failed"), "no slash command failed: " .. line) end

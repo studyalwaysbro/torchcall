@@ -26,7 +26,7 @@ It finds players with no guild, opens with one short question, helps you answer 
 - **Who stayed.** When the guild roster loads, recruits who joined at least a week ago are marked as still here or gone. The Answers tab shows invites after a conversation next to invites with no conversation: how many were accepted and how many were still in the guild a week later.
 - **Guild window texts.** `/torchcall guild` shows the guild Info text and message of the day next to a version with the Discord and the site in it, and writes one on command if your rank can. It never writes them by itself.
 - **Results.** Joins and declines are read from the game's own messages and counted.
-- **Limits.** 30 new people an hour, 100 a day and 4 seconds between whispers by default. `/torchcall cap` changes the hourly number, up to 60. `/torchcall cap day 300` changes the daily one and `/torchcall cap day off` removes it. These are the addon's own brakes, not the game's: the game may still act on an account that gets reported for spam.
+- **Limits.** 60 new people an hour, 100 a day and 4 seconds between whispers by default. `/torchcall cap` changes the hourly number, up to 120. `/torchcall cap day 300` changes the daily one and `/torchcall cap day off` removes it. These are the addon's own brakes, not the game's: the game may still act on an account that gets reported for spam.
 - **Only its own searches.** A who search you type yourself never puts anyone on the list. If one goes out while Torchcall is waiting for an answer, Torchcall throws its own search back on the queue instead of guessing whose answer arrived.
 - **Your words.** Every message is editable in game with a live character count. Tokens: `{name} {fullname} {level} {class} {zone} {guild}`.
 
@@ -37,8 +37,8 @@ There is no "invite all", no "send to everyone", no hands-free mode that turns y
 ## Install
 
 1. Download **Torchcall-x.y.z.zip** from the [latest release](../../releases/latest) and unzip it. You get a folder called `Torchcall`.
-2. Move that folder into `World of Warcraft/_classic_beta_/Interface/AddOns/`
-   (after launch the folder may have a different name than `_classic_beta_`; use whichever one has your Forever `Interface` folder).
+2. Move that folder into `World of Warcraft/_forever_/Interface/AddOns/`
+   `_forever_` is the live client. `_classic_beta_` was the beta and is dead: an addon installed there will not load.
 3. Fully restart the game and tick **Torchcall** on the AddOns screen.
 4. Type `/torchcall`.
 
