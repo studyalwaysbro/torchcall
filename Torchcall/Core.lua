@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.6.1"
+ns.VERSION = "1.7.0"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -82,17 +82,24 @@ local function initDB()
     db.templates = {}
     for i, t in ipairs(ns.TEMPLATES) do db.templates[i] = t end
   end
-  local moved = 0
-  for i, old in ipairs(ns.OLD_TEMPLATES) do
-    if db.templates[i] == old then db.templates[i] = ns.TEMPLATES[i] moved = moved + 1 end
+  -- One opener since 1.7.0. A saved line that is still exactly a stock line from any
+  -- version was never edited: the first of those becomes the current opener and the
+  -- rest are dropped. Every line the user wrote themselves stays.
+  local stock = {}
+  for _, set in ipairs({ ns.TEMPLATES, ns.RETIRED_TEMPLATES, ns.OLD_TEMPLATES, ns.OLD_TEMPLATES_2 }) do
+    for _, line in ipairs(set) do stock[line] = true end
   end
-  -- all three were the untouched 1.1 set: the openers added since come along too
-  if moved == #ns.OLD_TEMPLATES and #db.templates == moved then
-    for i = moved + 1, #ns.TEMPLATES do db.templates[i] = ns.TEMPLATES[i] end
+  local kept, swapped = {}, false
+  for _, line in ipairs(db.templates) do
+    if stock[line] then
+      if not swapped then kept[#kept + 1] = ns.TEMPLATES[1] swapped = true end
+    else
+      kept[#kept + 1] = line
+    end
   end
-  for i, old in ipairs(ns.OLD_TEMPLATES_2) do
-    if db.templates[i] == old then db.templates[i] = ns.TEMPLATES[i] end
-  end
+  if #kept == 0 then kept[1] = ns.TEMPLATES[1] end
+  db.templates = kept
+  if type(db.opts.template) == "number" and db.opts.template > #db.templates then db.opts.template = 1 end
   if db.groupmsg == ns.OLD_GROUP_TEMPLATE then db.groupmsg = ns.GROUP_TEMPLATE end
   if db.needmsg == ns.OLD_NEED_TEMPLATE then db.needmsg = ns.NEED_TEMPLATE end
   if type(db.reply) ~= "string" or db.reply == ns.OLD_REPLY then db.reply = ns.REPLY end

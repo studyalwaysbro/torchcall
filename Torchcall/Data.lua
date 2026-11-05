@@ -9,12 +9,16 @@ local _, ns = ...
 
 ns.GUILD_NAME = "The True Torchmen"
 
--- Every opener says who is in the guild (experienced players, casual players, new players),
--- carries the site and the Discord so the player can look before answering, and ends on a
--- question. With rotation on, each one gets a fair number of sends and then the one that gets
--- the most answers is used most.
+-- ONE opener since 1.7.0. It says who is in the guild (experienced players, casual
+-- players, new players), carries the site and the Discord so the player can look
+-- before answering, and ends on a question.
 ns.TEMPLATES = {
   "Hey {name}, got a guild yet? <{guild}> is a melting pot: experienced players, casual players and brand new players. Guides for every class: passthetorch.pages.dev  Discord: discord.gg/passthetorch  Want an invite?",
+}
+
+-- The other three 1.6.x openers. A saved line still exactly one of these was never
+-- edited, so the upgrade drops it; a line the user rewrote is kept.
+ns.RETIRED_TEMPLATES = {
   "Hey {name}, <{guild}> could use another {class}. We have everyone from veterans to casual players, plus leveling guides: passthetorch.pages.dev  Discord: discord.gg/passthetorch  Interested?",
   "Hi {name}, want a guild invite? <{guild}>: veterans, casual players and new players in one place, real life first. Guides: passthetorch.pages.dev  Discord: discord.gg/passthetorch  Say no and I will not ask again.",
   "Hey {name}, looking for a guild? <{guild}> has a bit of everything: experienced players, casual players, leveling and class guides. Have a look: passthetorch.pages.dev  Discord: discord.gg/passthetorch  Want in?",

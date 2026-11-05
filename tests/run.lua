@@ -682,22 +682,22 @@ eq(M.sentWho[#M.sentWho], "1-60", "one plain search")
 M.answerWho({})
 eq(ns.errors, nil, "no handler errors at the very end")
 
--- 1.1 defaults that were never edited move to the current ones; a rewritten message is left alone
+-- stock lines from any version collapse into the single current opener; rewritten lines stay
 TorchcallDB = { templates = { ns.OLD_TEMPLATES[1], "My own pitch for {name}.", ns.OLD_TEMPLATES[3], "A fourth one." } }
 local ns2 = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
 M.fire("ADDON_LOADED", "Torchcall")
-eq(TorchcallDB.templates[1], ns2.TEMPLATES[1], "an untouched old default becomes the new one")
+eq(TorchcallDB.templates[1], ns2.TEMPLATES[1], "the first untouched old default becomes the one opener")
 eq(TorchcallDB.templates[2], "My own pitch for {name}.", "a message you wrote is kept")
-eq(TorchcallDB.templates[3], ns2.TEMPLATES[3], "the third old default too")
-eq(TorchcallDB.templates[4], "A fourth one.", "extra messages are kept")
+eq(TorchcallDB.templates[3], "A fourth one.", "and so is a second one you wrote")
+eq(#TorchcallDB.templates, 3, "the other untouched default is dropped, not duplicated")
 -- the same for someone still on the 1.2 to 1.6.0 openers
 TorchcallDB = { templates = { ns.OLD_TEMPLATES_2[1], "Mine, {name}.", ns.OLD_TEMPLATES_2[3], ns.OLD_TEMPLATES_2[4] },
                 groupmsg = ns.OLD_GROUP_TEMPLATE, needmsg = "my need line" }
 ns2 = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
 M.fire("ADDON_LOADED", "Torchcall")
-eq(TorchcallDB.templates[1], ns2.TEMPLATES[1], "an untouched opener is swapped for the new one")
+eq(TorchcallDB.templates[1], ns2.TEMPLATES[1], "an untouched opener is swapped for the one opener")
 eq(TorchcallDB.templates[2], "Mine, {name}.", "an opener you wrote is kept")
-eq(TorchcallDB.templates[4], ns2.TEMPLATES[4], "the fourth too")
+eq(#TorchcallDB.templates, 2, "the rest of the untouched set is dropped")
 eq(TorchcallDB.groupmsg, ns2.GROUP_TEMPLATE, "the untouched group line is swapped")
 eq(TorchcallDB.needmsg, "my need line", "a needed-class line you wrote is kept")
 for i, t in ipairs(ns2.TEMPLATES) do
@@ -910,7 +910,16 @@ ok, why = ns.AddGroup()
 check(ok and db.prospects["Rai Der"] and not db.prospects["An Npc"], "raid members are read too, players only")
 M.group, M.raid = {}, false
 
--- rotation: every opener gets its turn, then the best is preferred
+-- rotation: with several openers (the user can keep their own), every one gets its
+-- turn, then the best is preferred. The default install has one, so this block
+-- gives itself four and puts the single default back at the end.
+local ONE_OPENER = db.templates
+db.templates = {
+  "Hey {name}, first test opener. Want an invite?",
+  "Hey {name}, <{guild}> could use another {class}. Interested?",
+  "Hi {name}, third test opener. Want in?",
+  "Hey {name}, fourth test opener. Want in?",
+}
 db.tstats = {}
 db.opts.rotate, db.opts.template = true, 2
 local keys = {}
@@ -938,6 +947,7 @@ eq(ns.PickTemplate({ name = "Has Class", classStr = "Mage" }), 2, "a player with
 db.opts.rotate, db.opts.template = false, 2
 eq(ns.PickTemplate({ name = "No Class" }), 1, "rotation off, same rule")
 db.opts.rotate = true
+db.templates, db.opts.template, db.tstats = ONE_OPENER, 1, {}
 
 -- the window: Answers tab, conversation panel, row actions
 M.printed = {}
@@ -1031,9 +1041,9 @@ TorchcallDB = { prospects = { ["Old Timer"] = { name = "Old Timer", status = "jo
 ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
 M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
 eq(TorchcallDB.stats.joined, 9, "old totals kept") eq(TorchcallDB.reply, "my own follow-up", "an edited follow-up kept")
-eq(TorchcallDB.templates[2], ns.TEMPLATES[2], "old default openers replaced")
+eq(TorchcallDB.templates[1], ns.TEMPLATES[1], "old default openers replaced by the one opener")
 check(TorchcallDB.answers.raids and TorchcallDB.checkin and TorchcallDB.groupmsg and TorchcallDB.opts.rotate == true, "new lines and rotation installed")
-eq(#TorchcallDB.templates, #ns.TEMPLATES, "an untouched 1.1 set gets the fourth opener too")
+eq(#TorchcallDB.templates, 1, "an untouched 1.1 set collapses to the one opener")
 TorchcallDB.reply = ns.OLD_REPLY
 M.reset(false)
 ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
