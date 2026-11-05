@@ -341,10 +341,10 @@ check(M.click("Search"), "search button")
 eq(#M.sentWho, whoBefore + 1, "search button sends one search")
 check(M.sentWho[#M.sentWho]:find('c%-"Warrior" z%-"Durotar"'), "window filters reach the query")
 M.answerWho(full, 80)
-check(M.click("Next search"), "a split plan turns the button into Next search")
+check(M.click("Continue"), "a split plan turns the button into Continue")
 eq(#M.sentWho, whoBefore + 1, "and the throttle still holds it")
 M.advance(6)
-check(M.click("Next search"), "next search button")
+check(M.click("Continue"), "continue button sends the next band")
 check(M.sentWho[#M.sentWho]:find("^1%-30 "), "queued half is sent")
 M.answerWho({ P("Moe Nunn"), P("Ned Orr") })
 check(M.click("All"), "changing a filter")
@@ -1136,7 +1136,7 @@ M.advance(6)
 ns.StartSearch(20, 30)
 M.answerWho(crowd(10, "WARRIOR", nil, "Wrong"), 10)
 eq(db.opts.whoMode, "include", "a wrong-class answer flips the reading of the filter")
-check(ns.searchNote:find("Press Search again", 1, true) and ns.QueueSize() >= 1, "and the same search is ready to go again: " .. ns.searchNote)
+check(ns.searchNote:find("Press Continue", 1, true) and ns.QueueSize() >= 1, "and the same search is ready to go again: " .. ns.searchNote)
 check(db.prospects["Wrong WARRIOR1"], "the guildless players that did come back are kept")
 M.advance(6) ns.NextSearch()
 eq(ids(M.sentFilters[#M.sentWho]), "5,8", "now the picked classes themselves are sent")
@@ -1533,6 +1533,90 @@ slash("autowelcome on") check(not db.opts.pressOnly, "autowelcome on asks the ga
 eq(ns.errors, nil, "no errors in the press-only section")
 M.pressOnly = nil db.opts.pressOnly = nil
 M.whoMode, M.pitch, M.autowelcome = "text", false, false
+
+-- discoverability: results are visible from any tab, and a search brings them to the front.
+-- This is the fix for "nothing shows for 7-20" - the recruiter was on the Joined tab while the
+-- prospects sat waiting on the Prospects tab, and the button read "Next search", not "Continue".
+do
+  M.reset(true)
+  ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+  M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
+  db = TorchcallDB slash = SlashCmdList["TORCHCALL"]
+  ns.ToggleClass(nil)
+  slash("") -- open the window
+  local function litTab()
+    for _, f in ipairs(M.frames) do
+      if f.__kind == "Button" and f.__lit and type(f.__text) == "string" then
+        local t = f.__text:gsub("|c%x%x%x%x%x%x%x%x", ""):gsub("|r", "")
+        for _, name in ipairs({ "Prospects", "Contacted", "Joined", "Message", "Answers" }) do
+          if t:sub(1, #name) == name then return name end
+        end
+      end
+    end
+  end
+  -- a wide search that splits into bands leaves a Continue button, never a silent dead end
+  M.advance(10)
+  check(M.click("Search"), "press Search for a wide range")
+  M.answerWho(full, 300)
+  check(ns.QueueSize() > 0, "a crowded range queues more bands")
+  check(ns.searchNote:find("Press Continue", 1, true), "and the note tells you to press Continue: " .. ns.searchNote)
+  M.advance(6) ns.OnChanged()
+  check(M.click("Continue"), "the button itself reads Continue, not the chore-sounding Next search")
+  M.answerWho({ P("Val Kerr", nil, 20, "MAGE"), P("Win Oot", nil, 22, "ROGUE"), P("Zed Ray", nil, 24, "PRIEST") })
+  local waiting = ns.Counts().new
+  check(waiting >= 3, "the prospects it found are waiting (" .. waiting .. ")")
+  ns.OnChanged()
+  check(M.click("Prospects (" .. waiting .. ")"), "the Prospects tab carries its count, so a filled list shows from any tab")
+  -- finish off the bands still queued so the button is back to a plain Search
+  for _ = 1, 10 do
+    if ns.QueueSize() == 0 then break end
+    M.advance(6)
+    if not M.click("Continue") then break end
+    M.answerWho({})
+  end
+  eq(ns.QueueSize(), 0, "every band was reachable, one Continue at a time")
+  -- from another tab, a fresh search brings the Prospects tab it is about to fill to the front
+  check(M.click("Joined"), "stand on the Joined tab, where the prospects are out of sight")
+  eq(litTab(), "Joined", "on the Joined tab")
+  M.advance(10)
+  check(M.click("Search"), "press Search from there")
+  eq(litTab(), "Prospects", "the search brings the Prospects tab to the front")
+  M.answerWho({ P("Abe Tenn", nil, 30, "HUNTER") })
+  -- but it never yanks you off a reply you are in the middle of
+  check(M.click("Answers"), "move to the Answers tab, mid-reply")
+  eq(litTab(), "Answers", "on the Answers tab")
+  M.advance(10)
+  check(M.click("Search"), "press Search while reading answers")
+  eq(litTab(), "Answers", "a search leaves you on Answers, it does not drag you off mid-reply")
+  M.answerWho({})
+  eq(ns.errors, nil, "no errors in the discoverability section")
+end
+
+-- a split search whose filters are then changed must not keep saying "press Continue":
+-- the button reverts to a plain Search that starts over, so the old note would be a dead end
+do
+  M.reset(true)
+  ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+  M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
+  db = TorchcallDB slash = SlashCmdList["TORCHCALL"]
+  ns.ToggleClass(nil)
+  slash("")
+  local function findText(kind, needle)
+    for _, f in ipairs(M.frames) do
+      if f.__kind == kind and type(f.__text) == "string" and f.__text:find(needle, 1, true) then return f.__text end
+    end
+  end
+  M.advance(10)
+  check(M.click("Search"), "a wide search")
+  M.answerWho(full, 300)
+  check(ns.QueueSize() > 0 and findText("FontString", "Press Continue"), "bands are queued and the note says press Continue")
+  ns.SetLevels(5, 10) ns.OnChanged()   -- the recruiter narrows the range without pressing Search
+  check(not findText("FontString", "Press Continue"), "once the filters change it stops telling you to press Continue")
+  check(findText("FontString", "Filters changed"), "it says the filters changed and a fresh Search is what the button now does")
+  check(M.click("Search"), "and the button is that fresh Search")
+  M.answerWho({})
+  eq(ns.errors, nil, "no errors in the stale-note section")
+end
 
 -- the version the addon reports is the version on the box
 do

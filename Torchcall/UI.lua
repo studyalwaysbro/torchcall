@@ -81,6 +81,9 @@ end
 local function startSearch()
   if ns.SearchPending() then return end
   local lo, hi, zone, key = searchInputs()
+  -- Show the Prospects tab this search is about to fill, so the results are in front of you
+  -- (the top cause of "nothing shows"). Leave you where you are mid-reply or mid-edit.
+  if currentTab ~= 4 and currentTab ~= 5 then currentTab, offset = 1, 0 end  -- not off the Message/Answers tab
   if ns.QueueSize() > 0 and key == planKey then
     ns.NextSearch()
   else -- nothing queued, or the filters changed: start over
@@ -681,7 +684,13 @@ function UI.Refresh()
   main.summary:SetText(("%sWaiting|r %s%d|r%s    %sAnswered|r %s%d|r    %sWhispered|r %s%d|r    %sInvited|r %s%d|r    %sJoined|r %s%d|r    %shour %d/%d, day %d%s|r")
     :format(GOLD, WHITE, c.new, hiddenNote, GOLD, WHITE, c.replied, GOLD, WHITE, db.stats.whispered, GOLD, WHITE, db.stats.invited,
             GOLD, WHITE, db.stats.joined, GREY, ns.SentThisHour(), opts.hourly, ns.SentToday(), opts.daily > 0 and ("/" .. opts.daily) or " (no daily limit)"))
-  main.note:SetText(ns.searchNote or "")
+  -- If the queued bands were built for other filters, the button is a plain Search that starts
+  -- over, so a leftover "press Continue for the next batch" note would be pointing at nothing.
+  if ns.QueueSize() > 0 and not ns.SearchPending() and select(4, searchInputs()) ~= planKey then
+    main.note:SetText("Filters changed. Press Search to start a fresh search.")
+  else
+    main.note:SetText(ns.searchNote or "")
+  end
 
   main.zone:SetText(zoneOnly and "My zone only" or "Any zone")
   main.latin:SetText(opts.latin and "Latin names" or "Any names")
@@ -697,17 +706,20 @@ function UI.Refresh()
   end
   local queued = ns.QueueSize()
   local wait = ns.SearchWait()
+  -- "Continue" only means the bands left from the current filters; change them and the button
+  -- is a plain Search that starts over, so a stale plan never wears the Continue label.
+  local planMatch = queued > 0 and select(4, searchInputs()) == planKey
   if ns.SearchPending() then
     main.search:SetText("Searching...")
-  elseif wait > 0 and queued > 0 then
+  elseif wait > 0 and planMatch then
     -- the game takes one who search every few seconds: count it down on the button
-    main.search:SetText(("Next search in %d"):format(wait))
+    main.search:SetText(("Continue in %d"):format(wait))
     if not main.counting then
       main.counting = true
       C_Timer.After(1, function() main.counting = false UI.Refresh() end)
     end
-  elseif queued > 0 and select(4, searchInputs()) == planKey then
-    main.search:SetText(("Next search (%d left)"):format(queued))
+  elseif planMatch then
+    main.search:SetText(("Continue (%d left)"):format(queued))
   else
     main.search:SetText("Search")
   end
@@ -715,6 +727,8 @@ function UI.Refresh()
   for i, b in ipairs(main.tabs) do
     if i == currentTab then b:LockHighlight() else b:UnlockHighlight() end
   end
+  -- the Prospects tab carries its own count, so a search filling it is visible from any tab
+  main.tabs[1]:SetText(c.new > 0 and ("Prospects " .. GREEN .. "(" .. c.new .. ")|r") or "Prospects")
   local due = #ns.DueCheckIns()
   local waiting = #ns.WelcomeWaiting()
   main.tabs[3]:SetText(waiting > 0 and ("Joined " .. GREEN .. "(" .. waiting .. " new)|r")

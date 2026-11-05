@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.7.2"
+ns.VERSION = "1.7.3"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -460,7 +460,7 @@ local function onForeignWho()
   local q = pending
   pending = nil
   table.insert(queue, 1, q)
-  ns.searchNote = "Another who search went out at the same time, so that one was put back. Press Search again."
+  ns.searchNote = "Another who search went out at the same time, so that one was put back. Press Continue to send it again."
   if ns.OnChanged then ns.OnChanged() end
 end
 ns.OnForeignWho = onForeignWho
@@ -637,7 +637,7 @@ function ns.NextSearch()
     pending = nil
     setWhoToUi(false)
     table.insert(queue, 1, q)
-    note("The game was slow to answer that one. Press Search again.")
+    note("The game was slow to answer that one. Press Continue to try it again.")
   end)
   return true
 end
@@ -731,7 +731,7 @@ local function onWhoResults()
       end
       queue = plan
     end
-    note(text .. (" That answer mixed in other classes, so the next search asks a different way. Press Search again (%d left)."):format(#queue))
+    note(text .. (" That answer mixed in other classes, so the next search asks a different way. Press Continue (%d left)."):format(#queue))
     return
   end
   -- this answer was really the answer to the same search without that filter: treat it so,
@@ -779,8 +779,8 @@ local function onWhoResults()
     end
   end
   if #queue > 0 then
-    text = text .. (capped and " More players are online than one search shows. Press Search for the next batch (%d left)."
-                             or " Press Search for the next batch (%d left)."):format(#queue)
+    text = text .. (capped and " More players are online than one search shows. Press Continue for the next batch (%d left)."
+                             or " Press Continue for the next batch (%d left)."):format(#queue)
   end
   note(text)
 end
