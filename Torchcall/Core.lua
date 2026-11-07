@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.7.4"
+ns.VERSION = "1.8.0"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
@@ -26,6 +26,7 @@ local PROSPECT_CAP, LOG_CAP = 3000, 150
 local CONTACTED_CAP = 20000   -- names remembered for good so nobody is ever asked twice
 local TSTATS_CAP = 40
 local ANSWER_MAX = 5          -- answers one player can be sent; past that, talk to them yourself
+local ANSWER_FRESH = 3 * 86400 -- an answered row pins to the top this long, then moves to Contacted
 local CHECKIN_AFTER = 2 * 86400 -- a recruit is due a check-in this long after joining
 local CHECKIN_UNTIL = 21 * 86400
 local ROTATE_MIN = 20         -- sends each opener gets before the best one is preferred
@@ -191,7 +192,9 @@ local function prune()
     local age = now - (p.t or p.seen or 0)
     if p.status == "new" and now - (p.seen or 0) > NEW_MAX_AGE then
       db.prospects[name] = nil
-    elseif p.status ~= "new" and p.status ~= "skipped" and p.status ~= "declined" and age > KEPT_MAX_AGE then
+    -- a skipped row two months old is clutter; the contacted record (checked by addFromWho)
+    -- is what keeps that player from ever being asked again, and it stays
+    elseif p.status ~= "new" and p.status ~= "declined" and age > KEPT_MAX_AGE then
       db.prospects[name] = nil
     else
       count = count + 1
@@ -277,6 +280,15 @@ local function answered(p)
   return p.replied ~= nil and (p.status == "whispered" or (p.status == "invited" and not p.linked))
 end
 ns.Answered = answered
+
+-- The answered rows worth pinning to the top of the waiting list. That someone answered
+-- never ages (Reply and the Answers panel read inConversation); the PIN does: after three
+-- days without the next step the row moves to the Contacted tab, where Reply and Skip
+-- both still work. Nothing is deleted by going quiet.
+local function freshAnswer(p)
+  return answered(p) and time() - (p.replied or 0) < ANSWER_FRESH
+end
+ns.FreshAnswer = freshAnswer
 
 local STATUS_ORDER = { whispered = 1, invited = 2, taken = 3, joined = 4, declined = 5, guilded = 6 }
 local LEVEL_CAP, LEVEL_MAX = 60, 80 -- Forever's cap, and the most the level boxes accept
@@ -419,19 +431,19 @@ function ns.List(kind)
   local rows, hidden = {}, 0
   for _, p in pairs(TorchcallDB.prospects) do
     if kind == "new" then
-      if answered(p) then
+      if freshAnswer(p) then
         rows[#rows + 1] = p
       elseif p.status == "new" then
         if matches(p) then rows[#rows + 1] = p else hidden = hidden + 1 end
       end
-    elseif STATUS_ORDER[p.status] and not answered(p) and (p.status == "joined") == (kind == "joined") then
+    elseif STATUS_ORDER[p.status] and not freshAnswer(p) and (p.status == "joined") == (kind == "joined") then
       rows[#rows + 1] = p
     end
   end
   local o = TorchcallDB.opts
   local key, up = SORTS[o.sort] or SORTS.seen, o.sortUp
   table.sort(rows, function(a, b)
-    if kind == "new" and answered(a) ~= answered(b) then return answered(a) end
+    if kind == "new" and freshAnswer(a) ~= freshAnswer(b) then return freshAnswer(a) end
     if kind == "new" and (a.ran and true or false) ~= (b.ran and true or false) then return a.ran and true or false end
     if kind == "new" and needed(a) ~= needed(b) then return needed(a) end
     if kind == "joined" and ns.CanWelcome(a) ~= ns.CanWelcome(b) then return ns.CanWelcome(a) end
@@ -453,7 +465,7 @@ function ns.Counts()
     else
       c[p.status] = (c[p.status] or 0) + 1
     end
-    if answered(p) then c.replied = c.replied + 1 end
+    if freshAnswer(p) then c.replied = c.replied + 1 end
   end
   return c
 end
@@ -749,7 +761,10 @@ local function onWhoResults()
   TorchcallDB.stats.found = TorchcallDB.stats.found + added
   local capped = total > shown or shown >= WHO_MAX
   local text
-  if capped then
+  if capped and total <= shown then
+    -- the server caps the reported total at the same fifty, so "50 of 50" would be a lie
+    text = ("%s: at least %d online, %d new without a guild."):format(describe(q), shown, added)
+  elseif capped then
     text = ("%s: showing %d of %d online, %d new without a guild."):format(describe(q), shown, math.max(total, shown), added)
   else
     text = ("%s: %d online, %d new without a guild."):format(describe(q), total, added)
@@ -816,9 +831,23 @@ local function onWhoResults()
       table.insert(queue, 1, item)
     end
     if q.hi > q.lo then
-      local mid = math.floor((q.lo + q.hi) / 2)
-      push({ lo = mid + 1 })
-      push({ hi = mid })
+      -- A full answer means the band is busy, so it is cut into up to four slices, single
+      -- levels once it is narrow. Cutting finer than in half saves presses in a busy range:
+      -- fewer middle searches that only prove "still full". The slices tile the band exactly,
+      -- lowest first; a slice that still comes back full is cut again, and a single level
+      -- stops for good. Everything here only joins the queue: the one sender stays
+      -- NextSearch, reached from a press.
+      local width = q.hi - q.lo + 1
+      local cuts = math.min(width, 4)
+      local base = math.floor(width / cuts)
+      local extra = width - base * cuts -- the first few slices carry the leftover levels
+      local slices, nextLo = {}, q.lo
+      for i = 1, cuts do
+        local sliceHi = nextLo + base - 1 + (i <= extra and 1 or 0)
+        slices[i] = { lo = nextLo, hi = sliceHi }
+        nextLo = sliceHi + 1
+      end
+      for i = cuts, 1, -1 do push(slices[i]) end
     elseif not q.class and not classFilterBroken and whoMode() ~= "local" and not (q.classes and #q.classes == 1) then
       local list = #picked > 0 and picked or ns.CLASSES
       local byFilter = whoMode() == "exclude" or whoMode() == "include"
@@ -1433,8 +1462,11 @@ end
 function ns.Skip(name)
   local p = TorchcallDB.prospects[name]
   if not p then return false end
-  p.status, p.t = "skipped", time()
-  TorchcallDB.contacted[name] = p.t
+  p.status, p.skipped = "skipped", time()
+  -- the first contact writes the record that stops a second ask; skipping someone already
+  -- contacted keeps the original time, which the funnel numbers and the prune read
+  if not p.t then p.t = p.skipped end
+  if not TorchcallDB.contacted[name] then TorchcallDB.contacted[name] = p.t end
   if ns.Comm then ns.Comm.Tell(name) end
   changed()
   return true
@@ -1499,7 +1531,7 @@ end
 function ns.FollowUps(olderThan)
   local list, now = {}, time()
   for _, p in pairs(TorchcallDB.prospects) do
-    if answered(p) and now - (p.replied or now) >= (olderThan or 0) then list[#list + 1] = p end
+    if freshAnswer(p) and now - (p.replied or now) >= (olderThan or 0) then list[#list + 1] = p end
   end
   table.sort(list, function(a, b) if a.replied ~= b.replied then return a.replied < b.replied end return a.name < b.name end)
   return list
@@ -1842,6 +1874,8 @@ end
 function handlers.CHAT_MSG_WHISPER(text, sender)
   text, sender = plain(text), plain(sender)
   local p = findProspect(sender)
+  -- Skip means skip: a skipped player's later whisper still reaches the chat window like
+  -- any other, but the addon no longer tracks it and the row never re-pins itself.
   if not p or (p.status ~= "whispered" and p.status ~= "invited" and not (p.status == "joined" and p.checked)) then return end
   if p.status == "joined" then -- an answer to a check-in: note it, nothing more to send
     p.said = type(text) == "string" and text:gsub("|", ""):sub(1, 120) or nil

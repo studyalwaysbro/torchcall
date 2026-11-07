@@ -76,26 +76,47 @@ for i = 1, 50 do full[i] = P("Guilded " .. i, "X") end
 local w = #M.sentWho
 check(ns.StartSearch(1, 4), "second search sends")
 M.answerWho(full, 120)
-eq(ns.QueueSize(), 2, "range split in two")
+eq(ns.QueueSize(), 4, "a narrow full band is cut into single levels")
+check(ns.searchNote:find("showing 50 of 120", 1, true) ~= nil, "a real total is still shown")
 check(not ns.NextSearch(), "who throttle holds a fast second search")
 eq(#M.sentWho, w + 1, "nothing sent during the throttle")
 M.advance(6)
 check(ns.NextSearch(), "next queued search sends after the gap")
-eq(M.sentWho[w + 2], "1-2", "lower half first")
+eq(M.sentWho[w + 2], "1-1", "lowest level first")
 M.answerWho(full, 90)
-eq(ns.QueueSize(), 3, "split again")
+eq(ns.QueueSize(), 3 + #ns.CLASSES, "a full single level splits by class")
 M.advance(6); ns.NextSearch()
-eq(M.sentWho[w + 3], "1-1", "single level")
-M.answerWho(full, 70)
-eq(ns.QueueSize(), 2 + #ns.CLASSES, "single level splits by class")
-M.advance(6); ns.NextSearch()
-eq(M.sentWho[w + 4], '1-1 c-"Warrior"', "class query")
+eq(M.sentWho[w + 3], '1-1 c-"Warrior"', "class query")
 M.answerWho(full, 60)
-eq(ns.QueueSize(), 1 + #ns.CLASSES + #M.races, "a full class search splits by race")
+eq(ns.QueueSize(), 2 + #ns.CLASSES + #M.races, "a full class search splits by race")
 M.advance(6); ns.NextSearch()
-eq(M.sentWho[w + 5], '1-1 c-"Warrior" r-"Orc"', "race query")
+eq(M.sentWho[w + 4], '1-1 c-"Warrior" r-"Orc"', "race query")
 M.answerWho(full, 55)
-eq(ns.QueueSize(), #ns.CLASSES + #M.races, "a full race search cannot split further")
+eq(ns.QueueSize(), 1 + #ns.CLASSES + #M.races, "a full race search cannot split further")
+
+-- a wide full band is cut into four slices that tile it exactly, lowest first
+M.advance(6)
+check(ns.StartSearch(16, 28), "wide search sends")
+M.answerWho(full, 50)
+eq(ns.QueueSize(), 4, "four slices queued")
+check(ns.searchNote:find("at least 50 online", 1, true) ~= nil, "a capped total is not repeated as the truth")
+local sliceTexts = {}
+for i = 1, 4 do
+  M.advance(6)
+  check(ns.NextSearch(), "slice " .. i .. " sends")
+  sliceTexts[i] = M.sentWho[#M.sentWho]
+  M.answerWho({})
+end
+eq(sliceTexts[1], "16-19", "first slice starts at the band's bottom")
+eq(sliceTexts[2], "20-22", "second slice follows with no gap")
+eq(sliceTexts[3], "23-25", "third slice follows with no gap")
+eq(sliceTexts[4], "26-28", "last slice ends exactly at the band's top")
+eq(ns.QueueSize(), 0, "nothing queued past the band")
+-- leave a queued plan behind for the timeout check below
+M.advance(6)
+check(ns.StartSearch(40, 47), "a fresh band for the timeout check")
+M.answerWho(full, 50)
+eq(ns.QueueSize(), 4, "slices queued for the timeout check")
 
 -- no answer: the search goes back on the queue
 M.advance(6)
@@ -345,7 +366,7 @@ check(M.click("Continue"), "a split plan turns the button into Continue")
 eq(#M.sentWho, whoBefore + 1, "and the throttle still holds it")
 M.advance(6)
 check(M.click("Continue"), "continue button sends the next band")
-check(M.sentWho[#M.sentWho]:find("^1%-30 "), "queued half is sent")
+check(M.sentWho[#M.sentWho]:find("^1%-15 "), "queued slice is sent")
 M.answerWho({ P("Moe Nunn"), P("Ned Orr") })
 check(M.click("All"), "changing a filter")
 eq(next(db.opts.classes), nil, "All clears the class filter")
@@ -380,7 +401,7 @@ eq(db.opts.lo, 1, "the refused plan does not move the level filter")
 M.answerWho(full, 200)
 M.advance(6)
 ns.NextSearch()
-eq(M.sentWho[#M.sentWho], "1-30", "the first plan carries on, the overlapping one was refused")
+eq(M.sentWho[#M.sentWho], "1-15", "the first plan carries on, the overlapping one was refused")
 M.answerWho({})
 
 
@@ -543,7 +564,7 @@ M.fire("ADDON_LOADED", "Torchcall") -- already initialised: ignored
 M.fire("PLAYER_LOGIN")
 check(not db.prospects["Old New"], "stale waiting player pruned")
 check(not db.prospects["Old Whisper"], "old contact pruned after 60 days")
-check(db.prospects["Old Skip"] ~= nil, "skips are kept")
+check(not db.prospects["Old Skip"], "an old skip is pruned; the contact record is the memory")
 check(db.prospects["Old Decline"] ~= nil, "a decline is remembered for good")
 
 -- 13b. a contacted player is never asked again, even after the record expires --------
@@ -556,12 +577,16 @@ M.advance(61 * 86400)
 M.fire("PLAYER_LOGIN")
 check(not db.prospects["Zed Forever"], "the detailed record is dropped after 60 days")
 check(db.contacted["Zed Forever"] ~= nil, "the name is remembered for good")
-seed({ P("Zed Forever"), P("Xi Taken"), P("New Face") })
+check(not db.prospects["Yan Skipped"], "a two month old skip is pruned")
+check(db.contacted["Yan Skipped"] ~= nil, "but the skipped name is remembered for good")
+seed({ P("Zed Forever"), P("Xi Taken"), P("New Face"), P("Yan Skipped") })
 check(not db.prospects["Zed Forever"], "a search 61 days later does not bring them back as new")
 check(not db.prospects["Xi Taken"], "nor someone a guildmate contacted")
+check(not db.prospects["Yan Skipped"], "nor a pruned skip")
 check(db.prospects["New Face"] ~= nil, "a new player is still found")
 check(not ns.Whisper("Zed Forever"), "and they cannot be whispered again")
-ok, why = ns.Forget("Yan Skipped")
+ns.Skip("New Face")
+ok, why = ns.Forget("New Face")
 check(not ok and why:find("already contacted"), "forget does not erase a contact record")
 -- data saved by 1.0.0 has no such memory: it is rebuilt from the records at load
 db.contacted = nil
@@ -633,7 +658,8 @@ repeat
   M.answerWho(page, 999)
   M.advance(6)
 until not ns.NextSearch() or rounds > 600
-eq(rounds, 15 + 8 * #ns.CLASSES + 8 * #ns.CLASSES * #M.races, "every level, class and race is visited exactly once, then it stops")
+-- 1 root + 4 slices + 8 singles, then classes and races under each single level
+eq(rounds, 13 + 8 * #ns.CLASSES + 8 * #ns.CLASSES * #M.races, "every level, class and race is visited exactly once, then it stops")
 eq(ns.QueueSize(), 0, "nothing left queued")
 ns.SetLevels(1, 60)
 
@@ -1112,14 +1138,14 @@ eq(ns.Counts().new, 50, "all fifty are on the list")
 check(ns.searchNote:find("showing 50 of 400 online", 1, true), "the note says how many are showing: " .. ns.searchNote)
 check(not ns.searchNote:lower():find("too many", 1, true) and not ns.searchNote:lower():find("could not", 1, true) and not ns.searchNote:lower():find("only the first", 1, true),
   "and never reads as a refusal: " .. ns.searchNote)
-check(ns.searchNote:find("next batch", 1, true) and ns.QueueSize() == 2, "the rest is queued as batches: " .. ns.searchNote)
+check(ns.searchNote:find("next batch", 1, true) and ns.QueueSize() == 4, "the rest is queued as batches: " .. ns.searchNote)
 eq(db.opts.whoMode, "exclude", "an answer of the right classes keeps the filter as it is")
 check(not ns.NextSearch(), "a press inside the gap sends nothing")
 check(ns.searchNote:find("^Ready in %d+ seconds"), "and says when, without the word limit: " .. ns.searchNote)
 check(ns.SearchWait() > 0, "the wait is known to the window")
 M.advance(6) eq(ns.SearchWait(), 0, "and runs out")
 check(ns.NextSearch(), "the next batch goes")
-eq(M.sentWho[#M.sentWho], "20-25", "the lower half of the levels")
+eq(M.sentWho[#M.sentWho], "20-22", "the lowest slice of the levels")
 eq(ids(M.sentFilters[#M.sentWho]), "1,2,3,4,7,9,11", "still filtered to the two classes")
 M.answerWho(crowd(50, "PRIEST", nil, "Low"), 90)
 M.advance(6) ns.NextSearch() M.answerWho({}, 0)
@@ -1243,6 +1269,10 @@ check(ns.CheckIn("Band 2"), "check-in to one who is")
 check(not M.sentChat[#M.sentChat][1]:find("discord.gg", 1, true), "leaves the link out")
 
 -- follow-ups
+eq(#ns.FollowUps(), 0, "an answer three days old stops nagging")
+-- they write again, which makes them fresh again
+for i = 3, 6 do M.fire("CHAT_MSG_WHISPER", "still thinking it over", "Band " .. i) end
+M.advance(900) -- the login reminder only names answers at least ten minutes old
 eq(#ns.FollowUps(), 4, "four people answered and were never invited") -- Band 3 to 6
 check(#ns.FollowUps(10 * 86400) == 0, "none of them that long ago")
 slash("warm")
@@ -1316,7 +1346,7 @@ M.advance(10) ns.StartSearch(1, 60)
 local mixed = crowd(49, "MAGE", nil, "Mostly") mixed[50] = P("One Stray", nil, 30, "WARRIOR")
 M.answerWho(mixed, 300)
 eq(db.opts.whoMode, "exclude", "one stray class among forty-nine right ones changes nothing")
-eq(ns.QueueSize(), 2, "and the plan carries on")
+eq(ns.QueueSize(), 4, "and the plan carries on")
 M.advance(6) ns.NextSearch()
 M.answerWho(crowd(50, "ROGUE", nil, "AllWrong"), 300)
 eq(db.opts.whoMode, "include", "an answer that is all the wrong classes does")
@@ -1675,6 +1705,61 @@ do
   check(ns.Counts().new >= 1, "the fallback search finds prospects")
   eq(ns.errors, nil, "no errors in the self-heal section")
   M.whoBlockFilters = nil
+end
+
+-- 19. an answered row pins while fresh, then moves on; Skip lets an invited one go --
+do
+  M.reset(true)
+  ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+  M.fire("ADDON_LOADED", "Torchcall"); M.fire("PLAYER_LOGIN")
+  db = TorchcallDB
+  ns.SetLevels(1, 60)
+  M.advance(10)
+  seed({ P("Pia Fresh", "", 20, "MAGE"), P("Quin Vited", "", 21, "MAGE") })
+  check(ns.Whisper("Pia Fresh"), "whisper the first prospect")
+  M.advance(5)
+  check(ns.Whisper("Quin Vited"), "whisper the second prospect")
+  M.fire("CHAT_MSG_WHISPER", "sounds fun, tell me more", "Pia Fresh")
+  M.fire("CHAT_MSG_WHISPER", "ok invite me", "Quin Vited")
+  M.advance(5)
+  check(ns.Invite("Quin Vited"), "invite the one who said yes")
+  local pia, quin = db.prospects["Pia Fresh"], db.prospects["Quin Vited"]
+  check(ns.Answered(pia) and ns.FreshAnswer(pia), "a fresh answer pins")
+  check(ns.Answered(quin) and ns.FreshAnswer(quin), "an answered invite still pins while fresh")
+  local pinned = {}
+  for _, r in ipairs(ns.List("new")) do pinned[r.name] = true end
+  check(pinned["Pia Fresh"] and pinned["Quin Vited"], "both sit on the Prospects tab")
+  eq(ns.Counts().replied, 2, "the header counts fresh answers")
+  eq(#ns.FollowUps(0), 2, "the warm reminder sees both")
+  -- the window shows a Skip button on the answered-then-invited row
+  SlashCmdList["TORCHCALL"]("")
+  check(TorchcallFrame and TorchcallFrame:IsShown(), "window opens")
+  check(M.click("Prospects"), "prospects tab")
+  check(M.click("Skip"), "an answered row can be skipped from the window")
+  check((pia.status == "skipped") ~= (quin.status == "skipped"), "exactly one row was let go")
+  -- put the skipped one back the long way for the aging half: use whichever survived
+  local kept = pia.status == "skipped" and quin or pia
+  local keptName = kept.name
+  M.advance(4 * 86400)
+  check(ns.Answered(kept), "the answer itself never ages")
+  check(not ns.FreshAnswer(kept), "the pin does")
+  for _, r in ipairs(ns.List("new")) do check(r.name ~= keptName, "an old answer no longer pins") end
+  local contacted = {}
+  for _, r in ipairs(ns.List("contacted")) do contacted[r.name] = true end
+  check(contacted[keptName], "it sits on the Contacted tab instead")
+  eq(ns.Counts().replied, 0, "and leaves the header count")
+  eq(#ns.FollowUps(0), 0, "and the warm reminder")
+  -- Skip still works there, and keeps the contact time for the funnel
+  local was = kept.t
+  check(ns.Skip(keptName), "skip after the pin aged out")
+  eq(kept.status, "skipped", "the row is let go")
+  eq(kept.t, was, "the contact time is kept")
+  check(kept.skipped ~= nil, "the skip has its own time")
+  -- skip means skip: a later whisper is seen in chat but never re-pins the row
+  M.fire("CHAT_MSG_WHISPER", "hey wait, I still want in", keptName)
+  eq(kept.status, "skipped", "a whisper after a skip changes nothing")
+  for _, r in ipairs(ns.List("new")) do check(r.name ~= keptName, "and does not re-pin the row") end
+  eq(ns.errors, nil, "no errors in the answered-lifecycle section")
 end
 
 -- the version the addon reports is the version on the box

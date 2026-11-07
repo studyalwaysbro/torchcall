@@ -796,7 +796,10 @@ function UI.Refresh()
           row.whisper:Hide()
         end
         if canInvite and (p.status == "new" or p.status == "whispered") then row.invite:Show() else row.invite:Hide() end
-        if p.status == "new" or p.status == "whispered" then row.skip:Show() else row.skip:Hide() end
+        -- invited is included so an answered-then-invited player who never accepts can be
+        -- let go; the status check is deliberate, not answered(): aged and linked rows on
+        -- the Contacted tab need the same way out
+        if p.status == "new" or p.status == "whispered" or p.status == "invited" then row.skip:Show() else row.skip:Hide() end
         row:Show()
       else
         row.name = nil
