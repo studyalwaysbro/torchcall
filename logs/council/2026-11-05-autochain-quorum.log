@@ -1,0 +1,41 @@
+[38;2;203;166;247m[1m╭─ QUORUM COUNCIL[0m  [38;2;108;112;134mDeepSeek + Codex · Grok(domain_skeptic) · synth=deepseek[0m
+[38;2;203;166;247m╰─ Torchcall (public WoW:Forever guild-recruiting addon, ~/projects/torchcall, v1.7.2). Find bugs and broken assumptions in this plan; do not rubber-stamp.
+
+PROBLEM: A recruiter sets a wide level range (e.g. 7-20). The game's who-search returns at most 50 players, so Torchcall splits the range into bands and QUEUES them. Today the Search button runs ONE band, then the user must click "Next search (N left)" once per remaining band, each gated by a 5s who-throttle (WHO_GAP=5). Users think the addon is broken ("nothing shows for 7-20") because (a) they are often on a different tab than Prospects, and (b) they do not realise they must press Search 5 more times. Verified: prospects DO load (231 waiting in the user's live session); he was on the Joined tab.
+
+CURRENT FLOW (Core.lua):
+- ns.StartSearch(lo,hi,zone): builds `queue` of band-searches, calls ns.NextSearch() for the first.
+- ns.NextSearch(): if `pending` set -> bail; checks ns.SearchWait() (seconds until the game allows another who; enforced by WHO_GAP against GetTime() AND a wall-clock copy TorchcallDB.lastWho so it survives /reload); on success sends C_FriendList.SendWho, sets `pending=q`, removes from queue, starts a WHO_TIMEOUT(6s) timer that re-queues the band if the game never answers.
+- onWhoResults() (on WHO_LIST_UPDATE): reads results for `pending`, adds no-guild players as prospects, sets `pending=nil`. Has early-return paths that RE-QUEUE the same band when the game ignored the class filter (retries asking a different way). Only answers to our own `pending` search are ever read (a who the user types themselves is ignored/thrown back).
+- WHO searches NEVER contact anyone; the 5s gap is the game's own who-throttle, NOT the 4s anti-spam whisper gap (that one is sacred and untouched here).
+
+PROPOSED (v1.7.3):
+1. A fresh StartSearch sets `chaining=true`. A single `advance()` runs after each WHO_LIST_UPDATE (and after the timeout re-queue): if chaining and not pending and queue not empty, it waits out ns.SearchWait() then calls NextSearch(); when the queue empties, chaining=false. So one press drains all bands automatically, each still spaced by the 5s throttle.
+2. Pressing the button while chaining STOPS the chain (button reads "Stop (N left)"); it does not send anything.
+3. On a fresh search, auto-switch the window to the Prospects tab, and add a live "(N new)" count to the Prospects tab label (the Joined tab already does this), so results are visible from any tab.
+4. No change to whisper/invite caps, the 4s whisper gap, or how prospects are filtered/added.
+
+QUESTIONS:
+1. Any way `advance()` can double-send (two who in flight) given `pending` and SearchWait guards, or re-enter after a /reload (TorchcallDB.lastWho persists; `chaining` is a session local that resets to false on reload - is losing the chain on reload acceptable? I think yes: a reload mid-chain just stops it, user presses Search once to resume)?
+2. The class-filter-not-honoured path re-queues the SAME band and flips whoMode. Under auto-chain this retries automatically - any infinite-loop risk (band keeps coming back mis-filtered)? Note whoMode only flips exclude->include->text, a finite ladder, and `text` mode explodes one band into per-class bands. Could the queue grow unboundedly while chaining?
+3. Is auto-switching the active tab on search good UX, or intrusive if the user is mid-action on Answers/Message tabs? Alternative: only switch if currently on Joined/Contacted, or never switch and rely on the tab count.
+4. Anything that could get the addon reported as a who-spam bot? (Who searches are not contacts, but is rapid automated who-querying itself a flaggable pattern on this server? The gap stays >=5s.)
+5. Any simpler fix that solves the user confusion without automating the queue at all?
+
+Constraints: public repo, release auto-posts to guild Discord and auto-mirrors to CurseForge; 1166-check offline suite must stay green; no automation of actual contacts.[0m
+
+Logged. Summary of where things stand:
+
+**Logging**
+- The safeguard's preferred path (`/home/yeeterson/projects/ticker-prophet/logs/council/`) is still awaiting permission — same wall the reviewers hit on the `.openclaw` path.
+- I fell back to the same durable location the other reviewers used: project memory at `council-2026-11-05-torchcall-auto-chain-synthesis.md`, indexed in `MEMORY.md`.
+
+**Final answer stands** (recap):
+
+- **Blocker-until-tested:** `SendWho` is called from `C_Timer.After` callbacks in the auto-chain. If it's hardware-event-restricted on Forever's client, one press silently stops after one band — the exact bug it was meant to fix. The code won't spin (pcall → `chaining=false`), but the feature is dead. The offline suite can't catch this (mock `SendWho` always succeeds). A ~30-second in-game probe is the release gate.
+- **Already handled in the uncommitted tree** (reviewers read only the plan): `CHAIN_MAX=30` caps the timeout loop; the class-fallback ladder is bounded (text expansion emits single-`class` entries that can't re-expand); tests were already rewritten for the chain.
+- **Real bugs in the tree:** unconditional tab-switch (`UI.lua:86`) is intrusive; slash `search <range>` flips `chaining` before `StartSearch` can refuse (`UI.lua:966-968`), silently draining the old queue.
+- **Release-surface contradiction:** `README.md` still promises "press a button for every search" and "no timer" — the addon's own trust story, unmodified, would be false if auto-chain ships.
+- **Preferred fix (Q5):** non-automated discoverability — scoped tab-switch, always-visible Prospects count, explicit "band N of M / Continue (N left)" progress, and stop-on-timeout. Keeps every existing promise and the fuzz "nothing outside a press" invariant intact.
+
+The adversarial round errored out (grok `--single` missing a prompt), so there was no adversary text to answer; I reconstructed the strongest adversarial angle ("green tests ≠ working feature") and verified it against the code — it's the pivotal fork above.

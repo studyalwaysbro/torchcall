@@ -35,7 +35,7 @@ for i, t in ipairs(ns.TEMPLATES) do
 end
 check(#ns.Render(ns.REPLY, long) <= 255, "follow-up fits")
 eq(ns.Render("Hi {name}, {level} {class} in {zone} <{guild}> {bogus}", long),
-   "Hi Maximilianus, 60 Warlock in Eastern Plaguelands <The True Torchmen> {bogus}", "tokens render, unknown ones stay")
+   "Hi Maximilianus, 60 Warlock in Eastern Plaguelands <True Torchmen> {bogus}", "tokens render, unknown ones stay")
 
 -- 2. a search keeps unguilded players only ------------------------------------
 check(ns.StartSearch(10, 20), "search sends")
@@ -149,7 +149,7 @@ local ok, why = ns.Whisper("Bob Smith")
 check(ok, "whisper sent: " .. tostring(why))
 eq(M.sentChat[1][2], "WHISPER", "sent as a whisper")
 eq(M.sentChat[1][3], "Bob Smith", "to the right player")
-check(M.sentChat[1][1]:sub(1, 46) == "Hey Bob, got a guild yet? <The True Torchmen> ", "message rendered with first name and guild")
+check(M.sentChat[1][1]:sub(1, 42) == "Hey Bob, got a guild yet? <True Torchmen> ", "message rendered with first name and guild")
 eq(db.prospects["Bob Smith"].status, "whispered", "marked whispered")
 ok = ns.Whisper("Bob Smith")
 check(not ok, "same player is never whispered twice")
@@ -1061,7 +1061,7 @@ check(not ok and why:find("rank cannot") and M.guildMotd == "the guild master's 
 M.canEditMotd, M.myGuild = true, "Another Guild"
 ok, why = ns.SetGuildText("motd")
 check(not ok and why:find("written for") and M.guildMotd == "the guild master's own", "another guild's text is never overwritten with ours")
-M.myGuild = "The True Torchmen"
+M.myGuild = "True Torchmen"
 M.inGuild = false
 ok = ns.SetGuildText("motd")
 check(not ok, "no guild, no write")
@@ -1250,7 +1250,7 @@ eq(#ns.Recruits(), 2, "two recruits")
 M.fire("CHAT_MSG_GUILD", "hi all", "Band 1")
 check(db.prospects["Band 1"].steps.hello, "speaking in guild chat ticks hello")
 M.fire("CHAT_MSG_GUILD", "hi", "Somebody Else") -- not a recruit: nothing
-M.group = { { name = "Band 2", guild = "The True Torchmen", class = "PRIEST", level = 24 } }
+M.group = { { name = "Band 2", guild = "True Torchmen", class = "PRIEST", level = 24 } }
 M.fire("GROUP_ROSTER_UPDATE")
 check(db.prospects["Band 2"].steps and db.prospects["Band 2"].steps.run, "being in your party ticks run")
 M.group = {}

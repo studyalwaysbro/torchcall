@@ -29,7 +29,7 @@ local FIRST = { "Bob", "Ann", "Cy", "Dee", "Eli", "Fay", "Gus", "Hal", "Ivy", "J
                 "Se\195\177ora", "\208\152\208\178\208\176\208\189", "\236\157\180\236\136\156", "Zo\195\171", "O'Neil", "X" }
 local LAST = { "Smith", "Lee", "Dunn", "Fox", "Gant", "Holt", "Ives", "Jett", "Kerr", "Lowe", "Mann", "Nash", "Orr", "Quill",
                "Stone", "Thunderbluffson", "\208\159\208\181\209\130\209\128\208\190\208\178", "de la Cruz" }
-local GUILDS = { "", "", "", "", "OLYMPUS", "Some Guild", "The True Torchmen" }
+local GUILDS = { "", "", "", "", "OLYMPUS", "Some Guild", "True Torchmen" }
 local ZONES = { "Durotar", "The Barrens", "Orgrimmar", "Stranglethorn Vale", "Zephras Isle" }
 local JUNK = { "", " ", "x", "|", ";;;", "C;1", "L;1;abcdef;", "C;2;abcdef;Bob Smith", string.rep("z", 300), "%s", "{name}", "1-", "-5", "999" }
 
@@ -353,7 +353,7 @@ local STEP = {
   function() db.opts.rotate = chance(0.7) end,
   function() M.canEditInfo, M.canEditMotd = chance(0.7), chance(0.7) end,
   function() if chance(0.2) then M.guildInfo = pick({ "", "something the guild master wrote", M.secret() }) end end,
-  function() if chance(0.1) then M.myGuild = pick({ "The True Torchmen", "The True Torchmen", "Another Guild" }) end end,
+  function() if chance(0.1) then M.myGuild = pick({ "True Torchmen", "True Torchmen", "Another Guild" }) end end,
   function() if chance(0.05) then db.answers[pick(TOPICS)] = pick({ "", string.rep("q", 300) }) end end,
   function() if chance(0.03) then db.checkin = pick({ "", string.rep("q", 300), "CHECKIN {name}" }) end end,
   function() -- a guildmate's addon talks

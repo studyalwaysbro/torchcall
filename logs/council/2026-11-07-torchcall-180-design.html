@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quorum transcript</title>
+<style>
+:root {
+  color-scheme: light;
+  --ink: #172026;
+  --muted: #5b6770;
+  --line: #d9e1e6;
+  --panel: #f8fafb;
+  --accent: #145c9e;
+  --warn: #a4321f;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: #ffffff;
+  color: var(--ink);
+  font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+main { max-width: 1180px; margin: 0 auto; padding: 28px 18px 44px; }
+header { border-bottom: 1px solid var(--line); margin-bottom: 20px; padding-bottom: 14px; }
+h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: 0; }
+h2 { font-size: 18px; margin: 24px 0 10px; letter-spacing: 0; }
+h3 { font-size: 15px; margin: 0 0 8px; letter-spacing: 0; }
+.question { margin: 0; color: var(--muted); white-space: pre-wrap; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.card, .panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px;
+}
+.pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.badge {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.objection .panel { border-left: 4px solid var(--warn); background: #fff7f5; }
+.flip { border-left: 4px solid var(--accent); padding-left: 8px; font-weight: 650; }
+.footnotes { color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); margin-top: 24px; padding-top: 10px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.metric { font-size: 24px; font-weight: 700; }
+.hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.warning { border: 1px solid #f0a99d; border-left: 4px solid var(--warn); background: #fff5f2; padding: 12px; border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { border: 1px solid var(--line); padding: 7px 8px; text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+th { background: #eef3f6; }
+ul { margin-top: 8px; padding-left: 20px; }
+</style>
+</head>
+<body><main>
+<header><h1>Quorum transcript</h1><p class="question">Design review for Torchcall 1.8.0 (WoW Forever guild-recruiting addon, Lua). HARD INVARIANTS that must survive: every who search / whisper / invite / guild-chat line is sent inside a click or keypress handler; NO timers sending anything, NO auto-continue of who searches (council killed an auto-chain on 11-05; do not re-open that door); one press = one action; who answers cap at 50 results; 5s gap between who searches; on the live client the SendWho filter TABLE is blocked, so queries are text like &#x27;16-28 c-&quot;Mage&quot;&#x27; and live data confirms the class words ARE honored (whoMode=text, no fallback tripped). Current pain, verified in code and the user&#x27;s live SavedVariables: (P1) when a who answer caps at 50 and the band spans levels lo&lt;hi, onWhoResults splits it into TWO halves queued at the front; sweeping a dense 13-level band costs roughly 2x the presses because every interior node is a wasted capped search. PROPOSAL A: on a capped answer split the band into up to FOUR even slices (per-level when width&lt;=4); a slice that still caps splits again; still one press per search, Continue button shows the queue count. (P2) prospects who ANSWERED pin to the top of the Prospects tab via answered(p) = replied and (status whispered, or status invited and not linked). Rows with status &#x27;invited&#x27; show ONLY a Reply button: the Skip button is gated to status new|whispered, so an answered-then-invited prospect who never accepts is pinned FOREVER with no removal path; the user has 13 such stale rows aged 1-2 days. PROPOSAL B: (i) show Skip also on answered rows whose status is invited (ns.Skip already handles any status: sets status=skipped, keeps the contacted record so they are never re-whispered); (ii) answered older than 3 days stops pinning: answered() gains an age window, the row falls to the Contacted tab, data intact, Reply/Answers still work there because they key off inConversation(p) which is independent of answered(); (iii) the header &#x27;Answered N&#x27; counts only actionable (fresh, unskipped) answers. PROPOSAL C: when a capped answer reports total==shown==50 the note says &#x27;at least 50 online&#x27; instead of &#x27;showing 50 of 50 online&#x27; (the server caps the total too). Find real bugs, broken assumptions, bad interactions with the fuzz invariant &#x27;nothing sent outside a press&#x27;, data-loss risks in B, and anything that quietly re-opens timer-driven sends. Dissent explicitly welcome; do not rubber-stamp. --json --html</p></header>
+<section><h2>Blind Answers</h2><div class="grid"><article class="card"><h3>deepseek</h3><div class="badges"></div><div class="pre">I read the full addon (`Core.lua`, `UI.lua`, `Comm.lua`, `Data.lua`), the fuzz harness (`tests/fuzz.lua`), and the prior council notes in memory. Verdict up front: **A is safe on the send-invariant but only partially fixes the pain and rests on a broken assumption; B has one self-cancelling interaction that recreates the original no-removal bug one hop later; C is fine but its condition must be exact.** Details below.
+
+---
+
+## Hard invariants — disposition
+
+| Invariant | Verdict | Notes |
+|---|---|---|
+| who / whisper / invite / guild-chat only inside a press | **A, B, C do not add sends** | The one *existing* exception is auto-welcome (below). |
+| No timers sending anything | **A, B, C do not re-open it** | Auto-welcome already sends GUILD from `C_Timer.After` — see note. |
+| No auto-continue of who searches | **Safe *iff* A stays enqueue-only** | The split runs in `onWhoResults` (an **event**, not a press). |
+| One press = one action | **Safe** | Each slice is one queued `SendWho`; one `Continue` = one search. |
+| Who cap 50 / 5s gap / filter-table→text | **Untouched by all three** | `whoFilters()` still returns nil on the blocked client; 2-arg text path intact. |
+
+The split in the current code (`Core.lua:809-831`) only ever `table.insert`s into the queue; `NextSearch` (`Core.lua:616`) is the sole sender and is only reached from `startSearch` (Search/Continue click or keybind). None of the three proposals change that call graph — **provided** the implementer of A does not &quot;helpfully&quot; fire the next search from inside `onWhoResults` or from the timeout timer.
+
+---
+
+## Findings (ranked)
+
+### F1 — CRITICAL (Proposal B, self-cancelling): gate Skip on `status == &quot;invited&quot;`, not on `answered()`
+
+Proposal B(i) says &quot;show Skip also on answered rows whose status is invited,&quot; and B(ii) *redefines* `answered()` to be age-limited. If B(i) is implemented as the obvious `if p.status == &quot;new&quot; or p.status == &quot;whispered&quot; or ns.Answered(p)` (`UI.lua:799`), then the exact rows B(ii) ages out (&gt;3 days) have `answered() == false` and **lose the Skip button again**. Trace a &gt;3-day answered-then-invited row after B(ii):
+
+- `answered(p)` → false (age window), so `ns.List(&quot;contacted&quot;)` (`Core.lua:427`) includes it.
+- In the Contacted tab, `row.invite` hidden (status not new/whispered), and `row.skip` hidden under the proposed predicate (answered false).
+- It still shows Reply (`talking` at `UI.lua:786` is age-independent `p.replied and (whispered|invited|joined)`), and once its answers run out (`AnswersLeft` empty) it shows **no button at all**.
+
+That is precisely the original &quot;stuck invited row with no removal path,&quot; just moved from the top of Prospects to the middle of Contacted. And it isn&#x27;t only aged rows: *linked* invited rows (`answered()` already false via `not p.linked`) and *cold*-invited-never-accepted rows are in the same stuck state today and B(i) as scoped never fixes them.
+
+**Fix:** the Skip predicate must be `p.status == &quot;new&quot; or p.status == &quot;whispered&quot; or p.status == &quot;invited&quot;` — age-independent, no dependence on `answered()`. This covers aged, linked, and cold-invited rows uniformly, and is what actually removes the 13 stale rows regardless of their age.
+
+### F2 — HIGH (Proposal A): the 4-slice partition must tile `[lo,hi]` exactly; naive step arithmetic gaps or overshoots
+
+The current binary split is correct by construction (`push({lo = mid+1})` then `push({hi = mid})`, `Core.lua:818-821`) — the two halves exactly tile the band, no gap, no overshoot. A &quot;four even slices&quot; implemented as `step = (hi-lo+1)/4` (floor or ceil) in a loop is wrong in both directions:
+
+- `lo=16,hi=28` (width 13), `step=floor(13/4)=3` → slices `[16,18][19,21][22,24][25,27]` — **level 28 is silently never searched** (data loss).
+- `step=ceil(13/4)=4` → `[16,19][20,23][24,27][28,31]` — **overshoots past the user&#x27;s band**; `addFromWho` (`Core.lua:239-261`) stores the level-29..31 players as prospects and `stats.found` counts them, even though `matches()` hides them. They pollute the saved data and the &quot;N new without a guild&quot; note.
+
+The partition must be three cut points with the last slice&#x27;s `hi` exactly `q.hi` (e.g. `[lo,b1][b1+1,b2][b2+1,b3][b3+1,hi]`). Also push in reverse order so the lower slice is searched first, matching current behavior.
+
+### F3 — HIGH (Proposal A): &quot;a slice that still caps splits again&quot; must mean *enqueue*, never *send*
+
+`onWhoResults` runs from the `WHO_LIST_UPDATE` event, which the fuzz guard treats as outside a press (`inAction == false`, `tests/fuzz.lua:66`). The existing code is safe because it only queues. If the &quot;splits again&quot; step is implemented as an eager loop that calls `ns.NextSearch()` (even gated on the 5s gap via `C_Timer.After`), that is exactly the timer-driven auto-chain the council killed on 11-05 — a who search sent from an event/timer. The 5s gap would also make such a loop self-perpetuating (each answer schedules the next), which is the specific door that must stay shut. Keep A a pure queue-building operation in `onWhoResults`.
+
+### F4 — HIGH (Proposal A): &quot;even slices&quot; assumes a uniform level distribution — a broken assumption, and the signal to fix it is already in hand
+
+Even-slice splitting presumes players spread evenly across `[lo,hi]`. They don&#x27;t — Forever level distributions are heavily skewed toward the cap and low levels. And because of Proposal C&#x27;s own premise (server caps `total` at 50), the splitter is blind to total density. But it does *not* have to be: `onWhoResults` already reads `info.level` for all 50 returned players (`Core.lua:738-748`) and stores them via `addFromWho`. The splitter could bucket the 50 observed levels and drill only the buckets that look saturated. Consequences of staying with fixed arity:
+
+- Dense band: root + 4 slices still pay 5 &quot;wasted&quot; presses before reaching per-level; for the stated 13-level pain the honest gain over binary is only ~30%, and per-level-from-the-start (or a higher per-level threshold) would be strictly better.
+- Sparse band (e.g. 60 players across 1-60, root caps at 50): 4-way fires 4 slices where binary&#x27;s 2 children would have sufficed — it *adds* presses in the common mid-density case.
+
+So A trades one blind heuristic for another. Recommend: use the returned 50 results&#x27; levels to decide arity/where to drill, instead of a fixed &quot;4 even slices.&quot; (Worth noting: 4-way actually *reduces* the total node count vs binary, so the fuzz queue bound at `tests/fuzz.lua:408` is not a regression concern.)
+
+### F5 — MEDIUM (Proposal B): aged-out answers lose every discoverability signal
+
+Once `answered()` is age-limited, an answered-but-unresolved prospect is demoted to the Contacted tab where it sorts by `p.t` (`Core.lua:403`) alongside hundreds of cold contacts — no &quot;ANSWERED&quot; styling (`UI.lua:778` only colors when `answered`), no sort boost (the pinning sort only applies to `kind==&quot;new&quot;`, `Core.lua:434`), dropped from `/torchcall warm` (`FollowUps`, `Core.lua:1499-1506`) and from the login reminder. &quot;Data intact&quot; is true — but the *visibility* of &quot;this person wrote back and you never resolved them&quot; is gone. The pain is being converted from &quot;pinned and annoying&quot; to &quot;buried and forgotten.&quot; Recommend keeping aged-out answers at the top of Contacted with a stale marker, or a small &quot;N stale answers&quot; count, rather than a clean demotion.
+
+### F6 — MEDIUM (Proposal B): `ns.Skip` overwrites `p.t`, and skipped rows are never age-pruned
+
+`ns.Skip` (`Core.lua:1433-1441`) does `p.status, p.t = &quot;skipped&quot;, time()`, clobbering the invite/whisper timestamp. `prune()` (`Core.lua:194`) explicitly excludes `skipped` (and `declined`) from the 60-day prospect drop, and the cap path (`Core.lua:210-217`) only prunes `status == &quot;new&quot;`. So B(i), by widening the set of rows that can become `skipped`, grows an already-unbounded accumulation of skipped rows in `db.prospects`, and any future funnel/aged analysis that wants the invite time will find it replaced by the skip time. Not data loss of the thing that matters (`contacted` is preserved — re-whisper is correctly blocked), but a timestamp loss + unbounded growth worth a one-line fix (don&#x27;t overwrite `p.t` for an already-contacted row).
+
+### F7 — LOW (Proposal B): row and conversation panel disagree about Skip
+
+B(i) puts Skip on the invited row, but `refreshTalk()` still hides &quot;They said no&quot; for any status other than `whispered` (`UI.lua:676`). Same prospect, same `ns.Skip`, two different affordances depending on which surface you&#x27;re looking at. Cosmetic, but confusing.
+
+### F8 — LOW (Proposal C): the trigger must be `total == shown`, not `shown &gt;= 50`
+
+&quot;at least 50 online&quot; is only correct when `total == shown == 50`. The broader capped flag (`capped = total &gt; shown or shown &gt;= WHO_MAX`, `Core.lua:750`) also covers `total &gt; shown` (e.g. &quot;showing 50 of 87&quot;), where the current wording is informative and correct and must be kept. C is a safe, surgical wording fix; don&#x27;t let it touch the `total &gt; shown` branch.
+
+### F9 — NOTE (Proposal B(iii)): no new counter is needed — don&#x27;t add one
+
+The header `Answered N` already reads `c.replied` from `Counts()` (`Core.lua:456`, rendered at `UI.lua:684-686`), which is `answered(p)`-based. So &quot;fresh&quot; comes for free from B(ii)&#x27;s age window and &quot;unskipped&quot; comes for free from the status clause (skipped/declined rows never satisfy `answered`). The risk is if B(iii) is implemented as a *separate* counter keyed on `p.replied ~= nil` ignoring status/age — that would re-count skipped and aged rows. Just let `c.replied` flow from the updated `answered()`.
+
+### F10 — NOTE: &quot;Continue button shows the queue count&quot; already shipped
+
+`UI.lua:721-722` already renders `Continue (%d left)` from `ns.QueueSize()`. That clause of A is a no-op; no work needed there.
+
+### F11 — NOTE (pre-existing, flagging for completeness): &quot;NO timers sending anything&quot; is not literally true today
+
+The auto-welcome (`Core.lua:1806-1822`) sends a guild-chat line from `C_Timer.After`, including a *retry* timer (`greet(false)` at `Core.lua:1818`). It is the one send the fuzz guard explicitly exempts (`own = kind==&quot;GUILD&quot; and autowelcome`, `tests/fuzz.lua:64-65`) and it self-heals to `pressOnly` after a refusal. None of A/B/C touch it, and they must not — but if the review&#x27;s intent is to make the invariant literal rather than &quot;except auto-welcome,&quot; that&#x27;s the existing exception to close, not something A/B/C introduce.
+
+---
+
+## What checks out (verified, not rubber-stamp objections)
+
+- **B(ii) &quot;data intact / Reply still works&quot;**: `inConversation` (`Core.lua:1059-1061`) is independent of `answered()`, so Reply/Answers and the talk panel keep working for aged-out whispered/invited rows in Contacted. Event-driven transitions (join/decline/ignore via `CHAT_MSG_SYSTEM`, `Core.lua:1773-1840`) also still fire from Contacted — no lost joins.
+- **`p.replied` is a timestamp** (`Core.lua:1856`), so the age-window arithmetic is safe; no boolean/time arithmetic bug.
+- **A preserves the 5s gap and the 50 cap** and the text-mode class words path (`queryText` `c-&quot;Mage&quot;`) is not touched.
+- **C&#x27;s premise is correct** against the live data: on the blocked client the answer reports `total == shown == 50` because the server caps both.
+
+---
+
+## JSON
+
+```json
+{
+  &quot;review&quot;: &quot;Torchcall 1.8.0 design review (Proposals A/B/C)&quot;,
+  &quot;invariant_disposition&quot;: {
+    &quot;sends_inside_press&quot;: &quot;HOLD — A/B/C add no sends; auto-welcome remains the one existing timer-send exception&quot;,
+    &quot;no_timer_sends&quot;: &quot;HOLD — A/B/C add none; see F11&quot;,
+    &quot;no_auto_continue_who&quot;: &quot;AT RISK iff A fires NextSearch from onWhoResults/timer (F3)&quot;,
+    &quot;one_press_one_action&quot;: &quot;HOLD&quot;,
+    &quot;who_cap_50&quot;: &quot;HOLD&quot;,
+    &quot;who_gap_5s&quot;: &quot;HOLD&quot;,
+    &quot;filter_table_blocked_text_mode&quot;: &quot;HOLD — whoFilters() still nil on blocked client&quot;
+  },
+  &quot;findings&quot;: [
+    {&quot;id&quot;: &quot;F1&quot;, &quot;severity&quot;: &quot;critical&quot;, &quot;area&quot;: &quot;B&quot;, &quot;title&quot;: &quot;Skip gate keyed on answered() self-cancels with B(ii) age window; aged/linked/cold invited rows get no removal path&quot;, &quot;files&quot;: [&quot;Torchcall/UI.lua:799&quot;, &quot;Torchcall/Core.lua:276-279&quot;, &quot;Torchcall/Core.lua:427&quot;], &quot;fix&quot;: &quot;gate Skip on p.status == &#x27;invited&#x27; (age-independent), not answered(p)&quot;},
+    {&quot;id&quot;: &quot;F2&quot;, &quot;severity&quot;: &quot;high&quot;, &quot;area&quot;: &quot;A&quot;, &quot;title&quot;: &quot;4-slice partition by step arithmetic gaps or overshoots [lo,hi]&quot;, &quot;files&quot;: [&quot;Torchcall/Core.lua:818-821&quot;], &quot;failure&quot;: &quot;width 13, step 3 -&gt; level 28 never searched; step 4 -&gt; searches 29-31 outside band&quot;, &quot;fix&quot;: &quot;three cut points, last slice hi == q.hi&quot;},
+    {&quot;id&quot;: &quot;F3&quot;, &quot;severity&quot;: &quot;high&quot;, &quot;area&quot;: &quot;A&quot;, &quot;title&quot;: &quot;split-again must enqueue only; eager NextSearch from event/timer re-opens the killed auto-chain&quot;, &quot;files&quot;: [&quot;Torchcall/Core.lua:721-837&quot;, &quot;Torchcall/Core.lua:686-692&quot;]},
+    {&quot;id&quot;: &quot;F4&quot;, &quot;severity&quot;: &quot;high&quot;, &quot;area&quot;: &quot;A&quot;, &quot;title&quot;: &quot;even slices assume uniform level density; result-level histogram is a free adaptive signal&quot;, &quot;files&quot;: [&quot;Torchcall/Core.lua:738-748&quot;, &quot;Torchcall/Core.lua:809-831&quot;]},
+    {&quot;id&quot;: &quot;F5&quot;, &quot;severity&quot;: &quot;medium&quot;, &quot;area&quot;: &quot;B&quot;, &quot;title&quot;: &quot;aged-out answers lose all discoverability (badge/sort/warm/login reminder)&quot;, &quot;files&quot;: [&quot;Torchcall/Core.lua:403&quot;, &quot;Torchcall/Core.lua:434&quot;, &quot;Torchcall/Core.lua:1499-1506&quot;, &quot;Torchcall/UI.lua:778&quot;]},
+    {&quot;id&quot;: &quot;F6&quot;, &quot;severity&quot;: &quot;medium&quot;, &quot;area&quot;: &quot;B&quot;, &quot;title&quot;: &quot;ns.Skip overwrites p.t; skipped rows never age-pruned, B(i) widens accumulation&quot;, &quot;files&quot;: [&quot;Torchcall/Core.lua:1433-1441&quot;, &quot;Torchcall/Core.lua:194&quot;, &quot;Torchcall/Core.lua:210-217&quot;]},
+    {&quot;id&quot;: &quot;F7&quot;, &quot;severity&quot;: &quot;low&quot;, &quot;area&quot;: &quot;B&quot;, &quot;title&quot;: &quot;row gains Skip for invited but talk panel still hides &#x27;They said no&#x27;&quot;, &quot;files&quot;: [&quot;Torchcall/UI.lua:799&quot;, &quot;Torchcall/UI.lua:676&quot;]},
+    {&quot;id&quot;: &quot;F8&quot;, &quot;severity&quot;: &quot;low&quot;, &quot;area&quot;: &quot;C&quot;, &quot;title&quot;: &quot;&#x27;at least 50&#x27; must trigger on total == shown, not shown &gt;= 50&quot;, &quot;files&quot;: [&quot;Torchcall/Core.lua:750-755&quot;]},
+    {&quot;id&quot;: &quot;F9&quot;, &quot;severity&quot;: &quot;note&quot;, &quot;area&quot;: &quot;B(iii)&quot;, &quot;title&quot;: &quot;no new counter needed; c.replied already flows from answered()&quot;, &quot;files&quot;: [&quot;Torchcall/Core.lua:456&quot;, &quot;Torchcall/UI.lua:684-686&quot;]},
+    {&quot;id&quot;: &quot;F10&quot;, &quot;severity&quot;: &quot;note&quot;, &quot;area&quot;: &quot;A&quot;, &quot;title&quot;: &quot;Continue button already shows queue count&quot;, &quot;files&quot;: [&quot;Torchcall/UI.lua:721-722&quot;]},
+    {&quot;id&quot;: &quot;F11&quot;, &quot;severity&quot;: &quot;note&quot;, &quot;area&quot;: &quot;invariants&quot;, &quot;title&quot;: &quot;auto-welcome is the existing timer-send exception (with retry timer)&quot;, &quot;files&quot;: [&quot;Torchcall/Core.lua:1806-1822&quot;, &quot;tests/fuzz.lua:64-65&quot;]}
+  ]
+}
+```
+
+## HTML
+
+```html
+&lt;!doctype html&gt;
+&lt;html lang=&quot;en&quot;&gt;&lt;head&gt;&lt;meta charset=&quot;utf-8&quot;&gt;&lt;title&gt;Torchcall 1.8.0 review&lt;/title&gt;
+&lt;style&gt;
+ body{font:14px/1.5 system-ui,Segoe UI,sans-serif;max-width:960px;margin:24px auto;color:#1a1a1a;padding:0 16px}
+ h1{font-size:20px} h2{font-size:16px;margin-top:24px}
+ .crit{background:#fdecea;border-left:4px solid #c62828;padding:8px 12px;margin:10px 0}
+ .high{background:#fff7e6;border-left:4px solid #ef6c00;padding:8px 12px;margin:10px 0}
+ .med{background:#fffde7;border-left:4px solid #f9a825;padding:8px 12px;margin:10px 0}
+ .low{background:#e8f0fe;border-left:4px solid #1565c0;padding:8px 12px;margin:10px 0}
+ .note{background:#f1f3f4;border-left:4px solid #9aa0a6;padding:8px 12px;margin:10px 0}
+ code{font:12px ui-monospace,Menlo,monospace;background:#f0f0f0;padding:1px 4px;border-radius:3px}
+ table{border-collapse:collapse;width:100%;margin:12px 0} th,td{border:1px solid #ddd;padding:6px 8px;text-align:left} th{background:#fafafa}
+ .ok{color:#1e7d32;font-weight:600} .risk{color:#c62828;font-weight:600}
+&lt;/style&gt;&lt;/head&gt;&lt;body&gt;
+&lt;h1&gt;Torchcall 1.8.0 — design review&lt;/h1&gt;
+&lt;h2&gt;Invariant disposition&lt;/h2&gt;
+&lt;table&gt;&lt;tr&gt;&lt;th&gt;Invariant&lt;/th&gt;&lt;th&gt;Disposition&lt;/th&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;who/whisper/invite/guild-chat inside a press&lt;/td&gt;&lt;td class=&quot;ok&quot;&gt;HOLD — A/B/C add no sends&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;No timers sending anything&lt;/td&gt;&lt;td class=&quot;ok&quot;&gt;HOLD — A/B/C add none (see F11 for existing auto-welcome)&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;No auto-continue of who searches&lt;/td&gt;&lt;td class=&quot;risk&quot;&gt;AT RISK iff A fires NextSearch from onWhoResults/timer (F3)&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;One press = one action&lt;/td&gt;&lt;td class=&quot;ok&quot;&gt;HOLD&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;Who cap 50 / 5s gap / filter-table→text&lt;/td&gt;&lt;td class=&quot;ok&quot;&gt;HOLD — untouched&lt;/td&gt;&lt;/tr&gt;
+&lt;/table&gt;
+&lt;h2&gt;Findings&lt;/h2&gt;
+&lt;div class=&quot;crit&quot;&gt;&lt;b&gt;F1 · critical · B&lt;/b&gt; — Skip gated on &lt;code&gt;answered()&lt;/code&gt; self-cancels with B(ii)&#x27;s age window; aged-out, linked, and cold-invited rows all end up in Contacted with no removal path (the original bug, one hop later). Gate on &lt;code&gt;p.status == &quot;invited&quot;&lt;/code&gt;, age-independent. &lt;code&gt;UI.lua:799&lt;/code&gt;, &lt;code&gt;Core.lua:276-279&lt;/code&gt;, &lt;code&gt;Core.lua:427&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;high&quot;&gt;&lt;b&gt;F2 · high · A&lt;/b&gt; — Four &quot;even&quot; slices computed by step arithmetic either skip the top level(s) (width 13 → level 28 never searched) or overshoot past &lt;code&gt;hi&lt;/code&gt; (search 29-31, polluting prospects/stats). Partition with three cut points, last slice &lt;code&gt;hi == q.hi&lt;/code&gt;. &lt;code&gt;Core.lua:818-821&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;high&quot;&gt;&lt;b&gt;F3 · high · A&lt;/b&gt; — &quot;slice still caps → splits again&quot; must enqueue only. Eager &lt;code&gt;NextSearch&lt;/code&gt; from &lt;code&gt;onWhoResults&lt;/code&gt; or the timeout timer is the exact auto-chain the council killed on 11-05. &lt;code&gt;Core.lua:721-837&lt;/code&gt;, &lt;code&gt;686-692&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;high&quot;&gt;&lt;b&gt;F4 · high · A&lt;/b&gt; — &quot;Even slices&quot; assumes uniform level density. The 50 returned results already carry levels; use that histogram to drill only saturated buckets instead of a fixed arity that is worse than binary on sparse bands and worse than per-level on dense bands. &lt;code&gt;Core.lua:738-748&lt;/code&gt;, &lt;code&gt;809-831&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;med&quot;&gt;&lt;b&gt;F5 · medium · B&lt;/b&gt; — Aged-out answers lose badge, sort boost, &lt;code&gt;/torchcall warm&lt;/code&gt;, and login reminder; buried in Contacted. Keep a stale marker or sort them first. &lt;code&gt;Core.lua:403&lt;/code&gt;, &lt;code&gt;434&lt;/code&gt;, &lt;code&gt;1499-1506&lt;/code&gt;; &lt;code&gt;UI.lua:778&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;med&quot;&gt;&lt;b&gt;F6 · medium · B&lt;/b&gt; — &lt;code&gt;ns.Skip&lt;/code&gt; overwrites &lt;code&gt;p.t&lt;/code&gt;; skipped rows are never age-pruned, and B(i) widens that accumulation. Don&#x27;t overwrite &lt;code&gt;p.t&lt;/code&gt; for already-contacted rows. &lt;code&gt;Core.lua:1433-1441&lt;/code&gt;, &lt;code&gt;194&lt;/code&gt;, &lt;code&gt;210-217&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;low&quot;&gt;&lt;b&gt;F7 · low · B&lt;/b&gt; — Row gets Skip for invited but the talk panel still hides &quot;They said no&quot; for non-whispered. &lt;code&gt;UI.lua:799&lt;/code&gt; vs &lt;code&gt;UI.lua:676&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;low&quot;&gt;&lt;b&gt;F8 · low · C&lt;/b&gt; — &quot;at least 50&quot; must fire on &lt;code&gt;total == shown&lt;/code&gt;, not &lt;code&gt;shown &amp;gt;= 50&lt;/code&gt;; keep the &lt;code&gt;total &amp;gt; shown&lt;/code&gt; &quot;showing 50 of 87&quot; wording. &lt;code&gt;Core.lua:750-755&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;note&quot;&gt;&lt;b&gt;F9 · note · B(iii)&lt;/b&gt; — No new counter needed; the header&#x27;s &lt;code&gt;c.replied&lt;/code&gt; already flows from &lt;code&gt;answered()&lt;/code&gt;. Don&#x27;t add a parallel &lt;code&gt;p.replied ~= nil&lt;/code&gt; counter. &lt;code&gt;Core.lua:456&lt;/code&gt;, &lt;code&gt;UI.lua:684-686&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;note&quot;&gt;&lt;b&gt;F10 · note · A&lt;/b&gt; — &quot;Continue shows the queue count&quot; already shipped (&lt;code&gt;UI.lua:721-722&lt;/code&gt;).&lt;/div&gt;
+&lt;div class=&quot;note&quot;&gt;&lt;b&gt;F11 · note · invariants&lt;/b&gt; — Auto-welcome (incl. its retry timer) is the existing sanctioned timer-send; A/B/C must not add a second exception. &lt;code&gt;Core.lua:1806-1822&lt;/code&gt;&lt;/div&gt;
+&lt;/body&gt;&lt;/html&gt;
+```</div></article><article class="card"><h3>gpt-5.6-sol</h3><div class="badges"></div><div class="pre">```json
+{
+  &quot;decision&quot;: &quot;changes_requested&quot;,
+  &quot;scope_note&quot;: &quot;The workspace shell failed during sandbox startup, so this review is based on the supplied behavior and invariants rather than verified call-site inspection.&quot;,
+  &quot;proposal_verdicts&quot;: {
+    &quot;A&quot;: {
+      &quot;verdict&quot;: &quot;conditionally_accept&quot;,
+      &quot;summary&quot;: &quot;Safe for the interaction invariants if result handling only mutates the queue, but it is not an unconditional performance improvement.&quot;,
+      &quot;required_changes&quot;: [
+        &quot;Never split or requeue a capped singleton level; mark it terminal/truncated. Otherwise a dense single level can loop forever.&quot;,
+        &quot;Partition inclusive ranges without gaps or overlaps, and prepend the complete ordered batch. Repeated table.insert(queue, 1, slice) calls will reverse slice order.&quot;,
+        &quot;Define capped from shown &gt;= 50, not from total &gt; shown; the live server caps both values.&quot;,
+        &quot;Retain the exact text-query builder and class token for every child. Do not introduce SendWho(table) or fallback behavior.&quot;,
+        &quot;WHO_LIST_UPDATE must only process an outstanding query once, enqueue children, clear the in-flight query, and refresh UI. It must never dequeue or send.&quot;,
+        &quot;Do not permit another search while a result is outstanding, even after the five-second cooldown. Otherwise a late result can be attributed to the wrong band.&quot;,
+        &quot;Define the Continue count as queued unsent searches, excluding the current in-flight search.&quot;
+      ],
+      &quot;performance_warning&quot;: {
+        &quot;fully_dense_13_levels&quot;: &quot;Binary splitting takes 25 searches; the proposed four-way scheme takes 18: root + four intermediate slices + thirteen singleton searches.&quot;,
+        &quot;near_cap_13_levels&quot;: &quot;If each level has four matches, the root caps at 50. Binary finishes in 3 searches, while four-way takes 5.&quot;,
+        &quot;conclusion&quot;: &quot;A is a density tradeoff, not a monotonic optimization. It materially helps the reported dense case but does not eliminate all wasted interior searches.&quot;
+      }
+    },
+    &quot;B&quot;: {
+      &quot;verdict&quot;: &quot;accept_behavior_but_change_implementation&quot;,
+      &quot;summary&quot;: &quot;The UX goal is sound, but changing the meaning of answered() and overwriting invited with skipped both carry hidden state risks.&quot;,
+      &quot;required_changes&quot;: [
+        &quot;Keep a timeless hasAnswered/inConversation fact and introduce isActionableAnswer(p, now) for pinning, the Answered count, and the fresh invited-row Skip control. Do not globally age-limit answered() until every caller has been audited.&quot;,
+        &quot;Base freshness on the latest persisted inbound-reply timestamp, not prospect creation, whisper, invite, generic updatedAt, or session GetTime(). A later inbound reply should restart the three-day window.&quot;,
+        &quot;Use epoch time and compute now once per UI refresh so sorting, tab membership, controls, and the header cannot disagree at the cutoff.&quot;,
+        &quot;Provide a migration policy for boolean or missing reply timestamps. Do not stamp legacy answers with the migration time, which would falsely repin everything for three days. Prefer an existing message timestamp; otherwise treat age as unknown/stale while preserving the record.&quot;,
+        &quot;Verify Contacted-tab inclusion independently of Reply/Answers button logic. inConversation() can enable controls only after another predicate has admitted the row.&quot;,
+        &quot;Verify skipped records survive save/reload, retention cleanup, and prospect rebuilding and remain reachable in Contacted.&quot;,
+        &quot;Verify late guild-roster linking does not require status == invited. Replacing invited with skipped can otherwise prevent a later acceptance from becoming linked.&quot;,
+        &quot;If invited is meaningful history, prefer an answerDismissedAt/dismissed flag or preserve priorStatus/event history rather than destroying the invited state.&quot;
+      ],
+      &quot;policy_question&quot;: &quot;A skipped prospect who sends another inbound whisper remains unskipped or stays dismissed? Either is defensible, but it must be explicit; otherwise a later genuine response may be silently absent from the actionable count.&quot;
+    },
+    &quot;C&quot;: {
+      &quot;verdict&quot;: &quot;accept&quot;,
+      &quot;summary&quot;: &quot;\&quot;At least 50 online\&quot; is correct and more honest when shown == total == 50.&quot;,
+      &quot;required_changes&quot;: [
+        &quot;Use the same shown &gt;= 50 capped flag for both the message and splitting.&quot;,
+        &quot;If a future API supplies a trustworthy total greater than shown, retain the more informative showing-X-of-Y wording.&quot;,
+        &quot;Do not infer capped state by parsing the display note.&quot;
+      ]
+    }
+  },
+  &quot;invariant_tests&quot;: [
+    &quot;Instrument SendWho, whisper, invite, and guild-chat boundaries. Every call must occur within a synchronous click/keypress scope, and each scope may issue at most one outbound action.&quot;,
+    &quot;Fire WHO_LIST_UPDATE repeatedly, advance every timer, reload the UI, open tabs, and cross the three-day boundary: outbound-call count must remain zero.&quot;,
+    &quot;A capped result must change only queue and UI state. The next SendWho must require a separate press after the five-second gate.&quot;,
+    &quot;A capped singleton must terminate without requeueing.&quot;,
+    &quot;Duplicate or late WHO_LIST_UPDATE events must not split the same band twice.&quot;,
+    &quot;A Continue press must send exactly one textual query such as 16-28 c-\&quot;Mage\&quot;; no table-form or fallback call is allowed.&quot;,
+    &quot;A press during cooldown or while awaiting results must send nothing; the control should normally be disabled.&quot;,
+    &quot;Save/reload fixtures should cover fresh invited answers, answers older than three days, skipped invited answers, missing legacy timestamps, late replies, and late guild acceptance.&quot;
+  ],
+  &quot;timer_rule&quot;: &quot;A timer may update a label or enable a button, but no timer callback may call Continue, an OnClick handler, or any shared routine capable of sending. Aging can be evaluated on ordinary UI refreshes; it does not need an expiry timer.&quot;,
+  &quot;release_recommendation&quot;: &quot;Ship C. Ship A only with singleton termination, in-flight serialization, duplicate-event protection, and the invariant tests. Ship B&#x27;s UX, but use a dedicated actionable-answer predicate and resolve Contacted visibility, timestamp migration, and invited-status preservation first.&quot;
+}
+```
+
+```html
+&lt;article&gt;
+  &lt;h1&gt;Torchcall 1.8.0 design review: changes requested&lt;/h1&gt;
+
+  &lt;p&gt;&lt;strong&gt;A is conditionally acceptable.&lt;/strong&gt; Result handling may split and enqueue, but must never send. A capped singleton must terminate, duplicate result events must be ignored, and no new search may start while another result is outstanding.&lt;/p&gt;
+
+  &lt;p&gt;The performance claim needs tempering: a fully dense 13-level band falls from 25 searches under binary splitting to 18 under the proposed four-way split—not 14. A near-cap band can regress from three searches to five. This is still a reasonable policy for the observed dense workload, but it is not universally faster.&lt;/p&gt;
+
+  &lt;p&gt;&lt;strong&gt;B’s behavior is good, but the proposed implementation is unsafe without more checks.&lt;/strong&gt; Preserve a timeless answered/conversation fact and add a separate actionable-answer predicate for fresh pinning and the header count. Freshness must use the latest persisted inbound-reply epoch timestamp.&lt;/p&gt;
+
+  &lt;p&gt;Two assumptions need explicit proof: that skipped rows are actually admitted to the Contacted tab, and that changing &lt;code&gt;invited&lt;/code&gt; to &lt;code&gt;skipped&lt;/code&gt; cannot break late guild-roster linking or erase meaningful invitation history. Button eligibility through &lt;code&gt;inConversation()&lt;/code&gt; does not prove row visibility.&lt;/p&gt;
+
+  &lt;p&gt;Legacy replies without a reliable timestamp must not be assigned the migration time. Use a stored message timestamp where possible; otherwise preserve the data but treat the answer as stale or unknown.&lt;/p&gt;
+
+  &lt;p&gt;&lt;strong&gt;C is approved.&lt;/strong&gt; When both reported values stop at 50, “at least 50 online” accurately represents the uncertainty. Splitting and wording should share a direct &lt;code&gt;shown &amp;gt;= 50&lt;/code&gt; capped flag.&lt;/p&gt;
+
+  &lt;h2&gt;Non-negotiable regression test&lt;/h2&gt;
+
+  &lt;p&gt;Instrument every outbound API. Timer callbacks, result events, reloads, tab refreshes, and answer aging must produce zero outbound calls. A synchronous click or keypress may produce at most one. The next queued who search must always require another press and the five-second gate.&lt;/p&gt;
+
+  &lt;p&gt;A timer may repaint or enable a control, but it must not invoke Continue, an OnClick handler, or any shared function capable of sending.&lt;/p&gt;
+&lt;/article&gt;
+```</div></article></div></section>
+<section><h2>Critiques</h2><article class="panel"><h3>deepseek</h3><div class="pre">The council safeguard asked me to log key findings before stopping, but the write to that path is **awaiting your permission** — it&#x27;s outside this session&#x27;s working directory (`/home/yeeterson/projects/torchcall`).
+
+Two files are pending approval:
+
+1. `/home/yeeterson/projects/Asset-Cluster-Migration/logs/council/council-2026-11-07-torchcall-1.8.0-review.md` — the full council log (content below).
+2. `/home/yeeterson/.openclaw/workspace/logs/research-inbox.md` — a one-line pointer to it.
+
+Approve the write and I&#x27;ll finish logging; the synthesis above is complete and unchanged. Here&#x27;s what&#x27;s being written:
+
+---
+
+```markdown
+# Council log — Torchcall 1.8.0 design review aggregation
+
+**Date:** 2026-11-07
+**Topic:** Two-reviewer aggregation of Proposals A/B/C for Torchcall 1.8.0
+**Verdict:** Convergent — ship C; A only enqueue-only + exact partition; B&#x27;s UX right but needs status guards + migration.
+
+## Key findings
+
+### Agreements
+- Send invariant is the crux: split runs in WHO_LIST_UPDATE (event, not press) → must only mutate the queue, never call the sender.
+- A is not a monotonic win: dense 13-level 25→18 searches; near-cap band regresses 3→5.
+- Partition must tile [lo,hi] exactly — no gaps/overshoot.
+- C correct only when total == shown == 50.
+
+### Divergences
+- Grounding: A1 code-verified (line numbers); A2 spec-only (sandbox failed).
+- C trigger: A1 `total == shown` (correct); A2 `shown &gt;= 50` (looser, self-contradictory) → A1 wins.
+- A coverage: A2 alone catches capped-singleton termination + in-flight serialization/late-result attribution.
+- B data-loss: A1 `ns.Skip` overwrites p.t + unbounded skipped growth; A2 destroys `invited` status → late guild-roster linking break.
+
+### Strongest
+A1&#x27;s F1: Skip gate on `answered()` self-cancels with B(ii) age window — aged/linked/cold invited rows lose Skip, recreating the bug one hop later.
+
+### Weakest
+A2&#x27;s &quot;`shown &gt;= 50` for the message&quot; — mislabels &quot;showing 50 of 87&quot; as &quot;at least 50&quot;; self-contradictory. Runner-up: A1&#x27;s F4 histogram recommendation (truncated first-N is a biased density signal).
+
+## Actionable outcomes
+- Gate Skip on `p.status == &quot;invited&quot;`, age-independent.
+- Three cut points; last slice `hi == q.hi`; prepend reverse order.
+- Capped singleton terminates; never requeue width-1.
+- Serialize in-flight queries; ignore duplicate/late WHO_LIST_UPDATE.
+- Preserve `invited` history / inbound-reply timestamps; don&#x27;t stamp legacy answers with migration time.
+```</div></article><article class="panel"><h3>gpt-5.6-sol</h3><div class="pre">Overall, Answer 1 is stronger because it verifies concrete call sites and exposes an actual cross-proposal failure. Answer 2 contributes better adversarial tests and performance arithmetic, but several of its B concerns are explicitly hypothetical because it did not inspect the code.
+
+### Where they agree
+
+| Area | Shared conclusion |
+|---|---|
+| Proposal A safety | `WHO_LIST_UPDATE` may enqueue slices and refresh UI, but must never send, invoke Continue, or schedule a send. |
+| Press invariant | Every queued search requires a separate click/key press; one press sends at most one action. |
+| Search mechanics | Preserve the 5-second gate, textual class query, 50-result cap, and in-flight query attribution. |
+| A’s performance | Four-way splitting helps the reported dense 13-level case but is not universally faster. Answer 2 quantifies this well: 25 searches become 18, while a near-cap sparse case may regress from 3 to 5. |
+| Range handling | Child ranges must exactly cover `[lo, hi]`, without gaps, overlap, overshoot, or unintended reversal. Singleton ranges must terminate. |
+| Proposal B’s goal | Fresh, actionable answers should drive pinning and the header; conversation/history behavior must remain independent of freshness. |
+| Proposal C | “At least 50 online” is appropriate for `shown == total == 50`; known totals above 50 should retain “showing X of Y.” |
+| Regression testing | Events, timers, reloads, UI refreshes, and aging must produce zero outbound calls. |
+
+### Where they diverge
+
+- **How to implement B:** Answer 1 finds a concrete self-cancelling interaction: if Skip visibility depends on the newly age-limited `answered()`, the row loses Skip after three days. It therefore requires Skip for every `status == &quot;invited&quot;`, regardless of answer age. Answer 2 proposes a separate `isActionableAnswer()` predicate, which is good for pinning/counting, but its reference to a “fresh invited-row Skip control” risks preserving the same stale-row bug.
+
+- **Whether B actually loses data or functionality:** Answer 1 says code inspection proves Contacted membership and Reply/Answers remain functional through `inConversation()`, while identifying the real losses: `p.t` is overwritten and skipped rows accumulate. Answer 2 raises late-linking, persistence, legacy timestamp, and tab-admission concerns as risks requiring tests. Those are worthwhile tests, but not established bugs.
+
+- **Adaptive splitting:** Answer 1 recommends using the returned level histogram. Answer 2 sticks to deterministic four-way splitting with safeguards. The histogram idea is unsafe if used to omit ranges: a capped 50-row response is truncated and may not represent the unseen population. It may help choose cut points, but cannot safely prove that an apparently sparse bucket needs no search.
+
+- **Capped-state semantics:** Answer 1 correctly separates “response was capped” from “wording lacks a trustworthy total.” Answer 2 conflates them by requesting one `shown &gt;= 50` flag for both splitting and the message.
+
+- **Existing timer violation:** Answer 1 finds an existing auto-welcome guild-chat send inside `C_Timer.After`, explicitly exempted by the fuzz harness. Under the question’s literal hard invariant, this is a pre-existing release blocker, not merely a note. Answer 2 misses it because its workspace inspection failed.
+
+### Strongest reasoning
+
+Answer 1’s F1 is the strongest. It traces the exact interaction between B(i) and B(ii):
+
+`answered()` ages out → row moves to Contacted → Skip gate based on `answered()` becomes false → invited prospect again has no removal path.
+
+That is concrete, cross-component, directly relevant, and comes with the correct age-independent fix: show Skip whenever `status == &quot;invited&quot;`.
+
+### Weakest reasoning
+
+Answer 2’s instruction to “use the same `shown &gt;= 50` capped flag for both the message and splitting” is the weakest. It contradicts its own requirement to preserve “showing 50 of 87.” Both responses are capped, but only `total == shown == 50` warrants “at least 50”; known `total &gt; shown` should retain the exact total.
+
+Bottom line: use Answer 1 as the primary review, incorporate Answer 2’s singleton, duplicate-event, in-flight serialization, and quantified performance tests, reject Answer 2’s unified C predicate, and constrain Answer 1’s histogram idea so it can never suppress coverage.</div></article></section>
+<section><h2>Consensus / Issue Map</h2><article class="panel"><h3>quorum</h3><div class="pre">CONSENSUS / ISSUE MAP
+
+CRITIQUE AGREEMENTS
+- No critique claim was repeated verbatim across models; treat the emerging consensus as unconfirmed.
+
+UNRESOLVED DIVERGENCES / OPEN ASSUMPTIONS
+- The council safeguard asked me to log key findings before stopping, but the write to that path is **awaiting your permission** — it&#x27;s outside this session&#x27;s working directory (`/home/yeeterson/projects/torchcall`). (raised by 1 of 2 critics)
+- Two files are pending approval: (raised by 1 of 2 critics)
+- 1. (raised by 1 of 2 critics)
+- `/home/yeeterson/projects/Asset-Cluster-Migration/logs/council/council-2026-11-07-torchcall-1.8.0-review.md` — the full council log (content below). (raised by 1 of 2 critics)
+- 2. (raised by 1 of 2 critics)
+- `/home/yeeterson/.openclaw/workspace/logs/research-inbox.md` — a one-line pointer to it. (raised by 1 of 2 critics)
+- Approve the write and I&#x27;ll finish logging; the synthesis above is complete and unchanged. (raised by 1 of 2 critics)
+- Here&#x27;s what&#x27;s being written: (raised by 1 of 2 critics)</div></article></section>
+<section class="objection"><h2>Adversarial Objection</h2><article class="panel"><h3>grok</h3><div class="pre">[quorum CLIModel error: grok exited 1: error: a value is required for &#x27;--single &lt;PROMPT&gt;&#x27; but none was supplied
+
+For more information, try &#x27;--help&#x27;.
+grok-council: unwrap failed]</div></article></section>
+<section><h2>Synthesis</h2><article class="panel"><h3>deepseek</h3><div class="pre">I&#x27;ve verified every pivotal call-site claim against the actual code. Here is my synthesis.
+
+---
+
+## Executive verdict: **Approve with changes.** C ships now. A and B ship only with the guards below.
+
+My verification (against `Torchcall/Core.lua` + `UI.lua`) confirms the council&#x27;s core findings are real and correctly located. Two answers converge on the substance; the disagreements are narrow and resolvable.
+
+**The adversarial round produced no output** — `grok` crashed with a CLI error (`--single &lt;PROMPT&gt;` not supplied), so there is no substantive objection to incorporate. I ran the adversarial pass myself; it surfaced two concrete interactions the reviewers only flagged as open questions, and they are in the findings below (F7, F8).
+
+---
+
+### The three things that must not ship as-is
+
+**1. B self-cancels (critical, Answer 1&#x27;s F1 — verified).** `answered(p)` is `p.replied ~= nil and (status==&quot;whispered&quot; or (status==&quot;invited&quot; and not p.linked))` (`Core.lua:276-277`). The Skip button is gated `status==&quot;new&quot; or status==&quot;whispered&quot;` (`UI.lua:799`). If B(i) is implemented as the obvious `… or ns.Answered(p)`, then B(ii)&#x27;s 3-day age window makes `answered()` false for exactly the stale rows B exists to fix — and they fall to the Contacted tab (`Core.lua:427`, `not answered(p)`) with Skip hidden again. Linked-invited and cold-invited rows fail `answered()` *today* and were never covered. **Fix: gate Skip on `p.status == &quot;invited&quot;`, age- and reply-independent.** `ns.Skip` already handles any status safely (`Core.lua:1433-1440`).
+
+**2. A must stay enqueue-only, and a capped width-1 slice must terminate (Answer 1 F3 + Answer 2).** The split runs in `onWhoResults` → `WHO_LIST_UPDATE`, an *event*, not a press. The existing code is safe: the only sender is `ns.NextSearch` (`Core.lua:616`), reached only from `StartSearch` (click/keybind, `:718`); the `WHO_TIMEOUT` timer requeues and says &quot;press Continue&quot; but does **not** send (`:686-692`); and a capped singleton currently terminates because all three split branches are false for it (`:818-830`). A 4-way rewrite that fires `NextSearch` from the event or timer, or that re-splits a width-1 slice, re-opens the 11-05 auto-chain door. Also verified already-present and to be preserved: in-flight serialization (`:617`, `:699`), duplicate-event immunity (`:729` clears `pending` first), and late-result attribution (`:687`).
+
+**3. A&#x27;s partition must tile `[lo,hi]` exactly (Answer 1 F2 — verified).** `step = (hi-lo+1)/4` floor→drops level 28; ceil→searches 29-31 and pollutes prospects + `stats.found`. Three cut points, last slice `hi == q.hi`, prepend in reverse order so the lower slice runs first (as `:818-821` does today).
+
+### Real bugs I&#x27;m adding (adversarial pass, verified)
+
+- **F7 — inbound reply after Skip is silently dropped.** The whisper handler returns early unless `status ∈ {whispered, invited, joined-and-checked}` (`Core.lua:1845`). So once B(i) lets you Skip an answered-then-invited row, a later &quot;hey I still want in&quot; from that person never re-lights `p.replied`. Answer 2 raised this as an open question; the code answers it, and for the *warm* case the answer is undesirable. Make it explicit: skip = never re-engage, or re-open on inbound.
+- **F8 — `ns.Skip` clobbers the invite time in both places.** `ns.Invite` sets `p.t = invited-time` and `contacted[name] = invited-time` (`:1420-1421`); `ns.Skip` overwrites both with skip-time (`:1436-1437`). The re-contact guard survives, but the &quot;how long invited&quot; / warm-cold funnel timestamp is gone, and skipped rows accumulate forever (not in `STATUS_ORDER`, no prune path touches them). Don&#x27;t overwrite `p.t` for an already-contacted row.
+
+### Performance: A is a trade, not a fix (verified arithmetic)
+
+Dense 13-level band: binary = 25 searches, 4-way = 18 (root + 4 slices + 13 singletons). Near-cap band (4/level): binary = 3, 4-way = 5. It helps the reported dense case ~28%, regresses the sparse case, and never reaches per-level-from-start (13). A1&#x27;s &quot;~30%&quot; and A2&#x27;s numbers agree. The level histogram (A1 F4) may choose cut points but must **never suppress coverage** — the 50-row result is truncated first-N, a biased sample (Critique 2 is right here).
+
+### Where the council genuinely disagreed
+
+1. **C&#x27;s trigger:** A1 `total == shown` vs A2 `shown &gt;= 50`. A1 wins — A2&#x27;s own C section requires keeping &quot;showing 50 of 87,&quot; which `shown &gt;= 50` would mislabel. Verified `Core.lua:750` (`capped = total &gt; shown or shown &gt;= WHO_MAX`) needs the two branches kept distinct.
+2. **Adaptive splitting:** A1 histogram vs A2 deterministic. Ship deterministic; histogram only as non-suppressing refinement later.
+3. **B architecture:** not really opposed — A1&#x27;s status-gating and A2&#x27;s `isActionableAnswer` predicate are complementary. Synthesize: a timeless `p.replied ~= nil` / `inConversation` fact, plus a freshness predicate (age-windowed on latest persisted `p.replied`, not migration time) driving pin / header / `/torchcall warm` (`Core.lua:1502`); Skip gates on `status` alone.
+4. **Auto-welcome:** A1 calls it a pre-existing note; Critique 2 escalates to &quot;literal invariant blocker.&quot; Accurate framing: it *is* a timer-send today (`Core.lua:1806-1821`, opt-in `autowelcome`, self-heals to `pressOnly` on refusal, fuzz-exempt). Pre-existing, out of scope for A/B/C — but A/B/C must not add a second exception, and if the invariant must be literal, this is the thing to close separately.
+
+(Critique 1 was not a critique — it was housekeeping about log writes to paths outside this repo. Not part of the verdict; I did not act on it.)
+
+---
+
+```json
+{
+  &quot;review&quot;: &quot;Torchcall 1.8.0 design review (Proposals A/B/C) — synthesizer verdict&quot;,
+  &quot;decision&quot;: &quot;changes_requested&quot;,
+  &quot;adversarial_round&quot;: {
+    &quot;status&quot;: &quot;errored&quot;,
+    &quot;detail&quot;: &quot;grok exited 1 (CLI: no --single &lt;PROMPT&gt; supplied); no substantive objection produced&quot;,
+    &quot;synthesizer_compensation&quot;: &quot;ran own adversarial pass; yielded F7 (inbound-after-skip dropped) and F8 (invite timestamp clobber), plus the guard-preservation list in F5&quot;
+  },
+  &quot;invariant_disposition&quot;: [
+    {&quot;invariant&quot;: &quot;who/whisper/invite/guild-chat inside a press&quot;, &quot;verdict&quot;: &quot;HOLD&quot;, &quot;note&quot;: &quot;A/B/C add no sends; sole sender NextSearch only from click/keybind (Core.lua:616,718)&quot;},
+    {&quot;invariant&quot;: &quot;no timers sending anything&quot;, &quot;verdict&quot;: &quot;HOLD for A/B/C&quot;, &quot;note&quot;: &quot;pre-existing auto-welcome guild-chat send from C_Timer.After (Core.lua:1806-1821) is the one sanctioned exception; A/B/C must not add a second&quot;},
+    {&quot;invariant&quot;: &quot;no auto-continue of who searches&quot;, &quot;verdict&quot;: &quot;AT RISK iff 4-way rewrite sends from onWhoResults/timer&quot;, &quot;note&quot;: &quot;current code only enqueues (Core.lua:721-837); WHO_TIMEOUT requeues without sending (686-692)&quot;},
+    {&quot;invariant&quot;: &quot;one press = one action&quot;, &quot;verdict&quot;: &quot;HOLD&quot;},
+    {&quot;invariant&quot;: &quot;who cap 50 / 5s gap / text-mode class words&quot;, &quot;verdict&quot;: &quot;HOLD&quot;, &quot;note&quot;: &quot;WHO_MAX=50, WHO_GAP=5 (Core.lua:19,21); 2-arg text path intact (616-644)&quot;}
+  ],
+  &quot;findings&quot;: [
+    {&quot;id&quot;: &quot;F1&quot;, &quot;severity&quot;: &quot;critical&quot;, &quot;area&quot;: &quot;B&quot;, &quot;verified&quot;: true, &quot;title&quot;: &quot;Skip gate on answered() self-cancels with B(ii) age window; aged/linked/cold invited rows lose removal path&quot;, &quot;refs&quot;: [&quot;UI.lua:799&quot;, &quot;Core.lua:276-277&quot;, &quot;Core.lua:427&quot;], &quot;fix&quot;: &quot;gate Skip on p.status == &#x27;invited&#x27;, age- and reply-independent&quot;},
+    {&quot;id&quot;: &quot;F2&quot;, &quot;severity&quot;: &quot;high&quot;, &quot;area&quot;: &quot;A&quot;, &quot;verified&quot;: true, &quot;title&quot;: &quot;4-slice partition by step arithmetic gaps or overshoots [lo,hi]&quot;, &quot;refs&quot;: [&quot;Core.lua:818-821&quot;], &quot;fix&quot;: &quot;three cut points, last slice hi == q.hi, prepend lower-first&quot;},
+    {&quot;id&quot;: &quot;F3&quot;, &quot;severity&quot;: &quot;high&quot;, &quot;area&quot;: &quot;A&quot;, &quot;verified&quot;: true, &quot;title&quot;: &quot;split must enqueue only; eager NextSearch from event/timer re-opens the 11-05 auto-chain&quot;, &quot;refs&quot;: [&quot;Core.lua:721-837&quot;, &quot;Core.lua:616&quot;, &quot;Core.lua:686-692&quot;]},
+    {&quot;id&quot;: &quot;F4&quot;, &quot;severity&quot;: &quot;high&quot;, &quot;area&quot;: &quot;A&quot;, &quot;verified&quot;: true, &quot;title&quot;: &quot;capped width-1 slice must terminate; never requeue itself&quot;, &quot;refs&quot;: [&quot;Core.lua:818-830&quot;]},
+    {&quot;id&quot;: &quot;F5&quot;, &quot;severity&quot;: &quot;high&quot;, &quot;area&quot;: &quot;A&quot;, &quot;verified&quot;: true, &quot;title&quot;: &quot;preserve existing in-flight serialization, duplicate-event immunity, late-result attribution&quot;, &quot;refs&quot;: [&quot;Core.lua:617&quot;, &quot;Core.lua:699&quot;, &quot;Core.lua:729&quot;, &quot;Core.lua:687&quot;]},
+    {&quot;id&quot;: &quot;F6&quot;, &quot;severity&quot;: &quot;high&quot;, &quot;area&quot;: &quot;A&quot;, &quot;verified&quot;: true, &quot;title&quot;: &quot;density tradeoff, not monotonic win: dense 25→18, near-cap 3→5; histogram may inform cut points but must never suppress coverage&quot;, &quot;refs&quot;: [&quot;Core.lua:738-748&quot;]},
+    {&quot;id&quot;: &quot;F7&quot;, &quot;severity&quot;: &quot;high&quot;, &quot;area&quot;: &quot;B&quot;, &quot;verified&quot;: true, &quot;title&quot;: &quot;inbound whisper after Skip is silently dropped (handler filters skipped at Core.lua:1845); re-engage policy must be explicit&quot;, &quot;refs&quot;: [&quot;Core.lua:1845&quot;]},
+    {&quot;id&quot;: &quot;F8&quot;, &quot;severity&quot;: &quot;medium&quot;, &quot;area&quot;: &quot;B&quot;, &quot;verified&quot;: true, &quot;title&quot;: &quot;ns.Skip overwrites p.t and contacted[name] invite time; skipped rows accumulate unbounded&quot;, &quot;refs&quot;: [&quot;Core.lua:1433-1441&quot;, &quot;Core.lua:1420-1421&quot;], &quot;fix&quot;: &quot;don&#x27;t overwrite p.t for already-contacted rows&quot;},
+    {&quot;id&quot;: &quot;F9&quot;, &quot;severity&quot;: &quot;medium&quot;, &quot;area&quot;: &quot;B&quot;, &quot;title&quot;: &quot;aged-out answers lose badge/sort/warm/login reminder; keep stale marker or sort-first in Contacted&quot;, &quot;refs&quot;: [&quot;Core.lua:434&quot;, &quot;Core.lua:1502&quot;, &quot;UI.lua:778&quot;]},
+    {&quot;id&quot;: &quot;F10&quot;, &quot;severity&quot;: &quot;low&quot;, &quot;area&quot;: &quot;B&quot;, &quot;title&quot;: &quot;talk panel &#x27;They said no&#x27; gated to whispered vs row Skip on invited; reconcile&quot;, &quot;refs&quot;: [&quot;UI.lua:379-382&quot;, &quot;UI.lua:799&quot;]},
+    {&quot;id&quot;: &quot;F11&quot;, &quot;severity&quot;: &quot;low&quot;, &quot;area&quot;: &quot;C&quot;, &quot;verified&quot;: true, &quot;title&quot;: &quot;&#x27;at least 50&#x27; must trigger on total == shown == 50, keep &#x27;showing 50 of 87&#x27; for total &gt; shown&quot;, &quot;refs&quot;: [&quot;Core.lua:750-755&quot;]},
+    {&quot;id&quot;: &quot;F12&quot;, &quot;severity&quot;: &quot;note&quot;, &quot;area&quot;: &quot;B(iii)&quot;, &quot;verified&quot;: true, &quot;title&quot;: &quot;no new counter needed; c.replied already flows from answered()&quot;, &quot;refs&quot;: [&quot;Core.lua:456&quot;, &quot;UI.lua:685-686&quot;]},
+    {&quot;id&quot;: &quot;F13&quot;, &quot;severity&quot;: &quot;note&quot;, &quot;area&quot;: &quot;A&quot;, &quot;verified&quot;: true, &quot;title&quot;: &quot;&#x27;Continue shows queue count&#x27; already shipped&quot;, &quot;refs&quot;: [&quot;UI.lua:722&quot;]},
+    {&quot;id&quot;: &quot;F14&quot;, &quot;severity&quot;: &quot;note&quot;, &quot;area&quot;: &quot;invariants&quot;, &quot;verified&quot;: true, &quot;title&quot;: &quot;auto-welcome is the existing timer-send exception (self-heals to pressOnly); close separately if invariant must be literal&quot;, &quot;refs&quot;: [&quot;Core.lua:1806-1821&quot;]}
+  ],
+  &quot;disagreements&quot;: [
+    {&quot;topic&quot;: &quot;C trigger&quot;, &quot;a1&quot;: &quot;total == shown&quot;, &quot;a2&quot;: &quot;shown &gt;= 50&quot;, &quot;resolution&quot;: &quot;A1; A2&#x27;s own &#x27;showing X of Y&#x27; requirement contradicts shown&gt;=50&quot;},
+    {&quot;topic&quot;: &quot;adaptive splitting&quot;, &quot;a1&quot;: &quot;level histogram&quot;, &quot;a2&quot;: &quot;deterministic 4-way&quot;, &quot;resolution&quot;: &quot;deterministic ships; histogram only as non-suppressing cut-point refinement (truncated first-N sample)&quot;},
+    {&quot;topic&quot;: &quot;B predicate architecture&quot;, &quot;a1&quot;: &quot;status-gated Skip&quot;, &quot;a2&quot;: &quot;separate isActionableAnswer predicate&quot;, &quot;resolution&quot;: &quot;complementary, not opposed: timeless p.replied/inConversation fact + age-windowed freshness for pin/count/warm; Skip gates on status alone&quot;},
+    {&quot;topic&quot;: &quot;auto-welcome severity&quot;, &quot;a1&quot;: &quot;pre-existing note&quot;, &quot;critique2&quot;: &quot;literal-invariant blocker&quot;, &quot;resolution&quot;: &quot;real timer-send today but pre-existing, opt-in, self-limiting, fuzz-exempt; out of A/B/C scope; flag and close separately&quot;}
+  ],
+  &quot;release_recommendation&quot;: &quot;Ship C immediately (total==shown==50 only). Ship A only with: exact 3-cut partition, enqueue-only result handling, singleton termination, and the existing serialization guards preserved. Ship B&#x27;s UX only with: Skip gated on status==&#x27;invited&#x27; (age-independent), a freshness predicate separate from the timeless conversation fact, inbound-reply timestamp (not migration time) for aging, an explicit skip-then-reply policy (F7), and no p.t overwrite for contacted rows (F8).&quot;
+}
+```
+
+```html
+&lt;!doctype html&gt;&lt;html lang=&quot;en&quot;&gt;&lt;head&gt;&lt;meta charset=&quot;utf-8&quot;&gt;&lt;title&gt;Torchcall 1.8.0 — synthesizer verdict&lt;/title&gt;
+&lt;style&gt;
+ body{font:14px/1.55 system-ui,Segoe UI,sans-serif;max-width:980px;margin:24px auto;color:#1a1a1a;padding:0 16px}
+ h1{font-size:21px} h2{font-size:16px;margin-top:26px}
+ .crit{background:#fdecea;border-left:4px solid #c62828;padding:9px 13px;margin:10px 0}
+ .high{background:#fff7e6;border-left:4px solid #ef6c00;padding:9px 13px;margin:10px 0}
+ .med{background:#fffde7;border-left:4px solid #f9a825;padding:8px 12px;margin:10px 0}
+ .low{background:#e8f0fe;border-left:4px solid #1565c0;padding:8px 12px;margin:10px 0}
+ .note{background:#f1f3f4;border-left:4px solid #9aa0a6;padding:8px 12px;margin:10px 0}
+ code{font:12px ui-monospace,Menlo,monospace;background:#f0f0f0;padding:1px 4px;border-radius:3px}
+ table{border-collapse:collapse;width:100%;margin:12px 0} th,td{border:1px solid #ddd;padding:6px 8px;text-align:left;vertical-align:top} th{background:#fafafa}
+ .ok{color:#1e7d32;font-weight:600} .risk{color:#c62828;font-weight:600} .ver{color:#5c6bc0;font-weight:600;font-size:11px}
+&lt;/style&gt;&lt;/head&gt;&lt;body&gt;
+&lt;h1&gt;Torchcall 1.8.0 — design review: changes requested&lt;/h1&gt;
+&lt;p&gt;&lt;b&gt;Verdict:&lt;/b&gt; ship C now; ship A and B only with the guards below. Every finding marked &lt;span class=&quot;ver&quot;&gt;VERIFIED&lt;/span&gt; was re-checked against &lt;code&gt;Torchcall/Core.lua&lt;/code&gt; and &lt;code&gt;UI.lua&lt;/code&gt; in this synthesis.&lt;/p&gt;
+&lt;p&gt;&lt;b&gt;Adversarial round:&lt;/b&gt; &lt;code&gt;grok&lt;/code&gt; crashed with a CLI error and produced no objection; the synthesizer ran the adversarial pass itself, yielding F7 and F8.&lt;/p&gt;
+
+&lt;h2&gt;Invariant disposition&lt;/h2&gt;
+&lt;table&gt;&lt;tr&gt;&lt;th&gt;Invariant&lt;/th&gt;&lt;th&gt;Disposition&lt;/th&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;who/whisper/invite/guild-chat inside a press&lt;/td&gt;&lt;td class=&quot;ok&quot;&gt;HOLD — A/B/C add no sends; sole sender &lt;code&gt;NextSearch&lt;/code&gt; only from click/keybind (&lt;code&gt;Core.lua:616,718&lt;/code&gt;)&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;No timers sending anything&lt;/td&gt;&lt;td class=&quot;ok&quot;&gt;HOLD for A/B/C — pre-existing auto-welcome (&lt;code&gt;Core.lua:1806-1821&lt;/code&gt;) is the one sanctioned exception&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;No auto-continue of who searches&lt;/td&gt;&lt;td class=&quot;risk&quot;&gt;AT RISK iff the 4-way rewrite sends from &lt;code&gt;onWhoResults&lt;/code&gt;/timer; current code only enqueues&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;One press = one action&lt;/td&gt;&lt;td class=&quot;ok&quot;&gt;HOLD&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;Who cap 50 / 5s gap / text-mode class words&lt;/td&gt;&lt;td class=&quot;ok&quot;&gt;HOLD — &lt;code&gt;WHO_MAX=50, WHO_GAP=5&lt;/code&gt;; 2-arg text path intact&lt;/td&gt;&lt;/tr&gt;
+&lt;/table&gt;
+
+&lt;h2&gt;Findings&lt;/h2&gt;
+&lt;div class=&quot;crit&quot;&gt;&lt;b&gt;F1 · critical · B&lt;/b&gt; &lt;span class=&quot;ver&quot;&gt;VERIFIED&lt;/span&gt; — Skip gated on &lt;code&gt;answered()&lt;/code&gt; self-cancels with B(ii)&#x27;s age window: aged-out, linked-invited, and cold-invited rows land in Contacted (&lt;code&gt;Core.lua:427&lt;/code&gt;) with Skip hidden again — the original bug one hop later. Gate on &lt;code&gt;p.status == &quot;invited&quot;&lt;/code&gt;, age- and reply-independent. &lt;code&gt;UI.lua:799&lt;/code&gt;, &lt;code&gt;Core.lua:276-277&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;high&quot;&gt;&lt;b&gt;F2 · high · A&lt;/b&gt; &lt;span class=&quot;ver&quot;&gt;VERIFIED&lt;/span&gt; — &quot;Four even slices&quot; via step arithmetic gaps (width 13 → level 28 never searched) or overshoots (searches 29-31, polluting prospects/stats). Three cut points, last slice &lt;code&gt;hi == q.hi&lt;/code&gt;, prepend lower-first. &lt;code&gt;Core.lua:818-821&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;high&quot;&gt;&lt;b&gt;F3 · high · A&lt;/b&gt; &lt;span class=&quot;ver&quot;&gt;VERIFIED&lt;/span&gt; — Split must enqueue only. Eager &lt;code&gt;NextSearch&lt;/code&gt; from &lt;code&gt;onWhoResults&lt;/code&gt; (event) or a timer is the 11-05 auto-chain. The existing &lt;code&gt;WHO_TIMEOUT&lt;/code&gt; timer requeues without sending — keep it that way. &lt;code&gt;Core.lua:721-837&lt;/code&gt;, &lt;code&gt;616&lt;/code&gt;, &lt;code&gt;686-692&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;high&quot;&gt;&lt;b&gt;F4 · high · A&lt;/b&gt; &lt;span class=&quot;ver&quot;&gt;VERIFIED&lt;/span&gt; — A capped width-1 slice must terminate, never requeue itself. Current code already does (all three split branches false for a singleton); the 4-way rewrite must preserve it. &lt;code&gt;Core.lua:818-830&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;high&quot;&gt;&lt;b&gt;F5 · high · A&lt;/b&gt; &lt;span class=&quot;ver&quot;&gt;VERIFIED&lt;/span&gt; — In-flight serialization (&lt;code&gt;:617&lt;/code&gt;, &lt;code&gt;:699&lt;/code&gt;), duplicate-event immunity (&lt;code&gt;:729&lt;/code&gt; clears &lt;code&gt;pending&lt;/code&gt; first), and late-result attribution (&lt;code&gt;:687&lt;/code&gt;) already exist. The rewrite must not weaken them.&lt;/div&gt;
+&lt;div class=&quot;high&quot;&gt;&lt;b&gt;F6 · high · A&lt;/b&gt; &lt;span class=&quot;ver&quot;&gt;VERIFIED (arithmetic)&lt;/span&gt; — Density tradeoff, not a monotonic win: dense 13-level 25→18 searches; near-cap 3→5. A level histogram may choose cut points but must never suppress coverage (the 50-row result is truncated first-N, a biased sample).&lt;/div&gt;
+&lt;div class=&quot;high&quot;&gt;&lt;b&gt;F7 · high · B&lt;/b&gt; &lt;span class=&quot;ver&quot;&gt;VERIFIED&lt;/span&gt; — Inbound whisper after Skip is silently dropped: the reply handler returns early unless status is whispered/invited/joined-checked (&lt;code&gt;Core.lua:1845&lt;/code&gt;). A later &quot;hey I still want in&quot; never re-lights &lt;code&gt;p.replied&lt;/code&gt;. Make the skip-then-reply policy explicit.&lt;/div&gt;
+&lt;div class=&quot;med&quot;&gt;&lt;b&gt;F8 · medium · B&lt;/b&gt; &lt;span class=&quot;ver&quot;&gt;VERIFIED&lt;/span&gt; — &lt;code&gt;ns.Skip&lt;/code&gt; overwrites &lt;code&gt;p.t&lt;/code&gt; and &lt;code&gt;contacted[name]&lt;/code&gt; (invite time → skip time); skipped rows accumulate unbounded. Don&#x27;t overwrite &lt;code&gt;p.t&lt;/code&gt; for an already-contacted row. &lt;code&gt;Core.lua:1433-1441&lt;/code&gt; vs &lt;code&gt;1420-1421&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;med&quot;&gt;&lt;b&gt;F9 · medium · B&lt;/b&gt; — Aged-out answers lose badge, sort boost, &lt;code&gt;/torchcall warm&lt;/code&gt;, and the login reminder; keep a stale marker or sort them first in Contacted. &lt;code&gt;Core.lua:434&lt;/code&gt;, &lt;code&gt;1502&lt;/code&gt;; &lt;code&gt;UI.lua:778&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;low&quot;&gt;&lt;b&gt;F10 · low · B&lt;/b&gt; — Talk panel &quot;They said no&quot; is gated to whispered while the row gains Skip for invited; reconcile. &lt;code&gt;UI.lua:379-382&lt;/code&gt; vs &lt;code&gt;799&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;low&quot;&gt;&lt;b&gt;F11 · low · C&lt;/b&gt; &lt;span class=&quot;ver&quot;&gt;VERIFIED&lt;/span&gt; — &quot;at least 50&quot; must fire on &lt;code&gt;total == shown == 50&lt;/code&gt;; keep &quot;showing 50 of 87&quot; for &lt;code&gt;total &amp;gt; shown&lt;/code&gt;. &lt;code&gt;Core.lua:750-755&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;note&quot;&gt;&lt;b&gt;F12 · note · B(iii)&lt;/b&gt; &lt;span class=&quot;ver&quot;&gt;VERIFIED&lt;/span&gt; — No new counter needed; &lt;code&gt;c.replied&lt;/code&gt; already flows from &lt;code&gt;answered()&lt;/code&gt;. &lt;code&gt;Core.lua:456&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;note&quot;&gt;&lt;b&gt;F13 · note · A&lt;/b&gt; &lt;span class=&quot;ver&quot;&gt;VERIFIED&lt;/span&gt; — &quot;Continue shows the queue count&quot; already shipped. &lt;code&gt;UI.lua:722&lt;/code&gt;&lt;/div&gt;
+&lt;div class=&quot;note&quot;&gt;&lt;b&gt;F14 · note · invariants&lt;/b&gt; &lt;span class=&quot;ver&quot;&gt;VERIFIED&lt;/span&gt; — Auto-welcome is the existing timer-send exception (opt-in, self-heals to &lt;code&gt;pressOnly&lt;/code&gt; on refusal). A/B/C must not add a second; close separately if the invariant must be literal. &lt;code&gt;Core.lua:1806-1821&lt;/code&gt;&lt;/div&gt;
+
+&lt;h2&gt;Where the council disagreed&lt;/h2&gt;
+&lt;table&gt;&lt;tr&gt;&lt;th&gt;Topic&lt;/th&gt;&lt;th&gt;Position A1&lt;/th&gt;&lt;th&gt;Position A2 / Critique 2&lt;/th&gt;&lt;th&gt;Resolution&lt;/th&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;C trigger&lt;/td&gt;&lt;td&gt;&lt;code&gt;total == shown&lt;/code&gt;&lt;/td&gt;&lt;td&gt;&lt;code&gt;shown &amp;gt;= 50&lt;/code&gt;&lt;/td&gt;&lt;td&gt;A1 — A2&#x27;s own &quot;keep showing-X-of-Y&quot; requirement contradicts &lt;code&gt;shown &amp;gt;= 50&lt;/code&gt;&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;Adaptive splitting&lt;/td&gt;&lt;td&gt;level histogram&lt;/td&gt;&lt;td&gt;deterministic 4-way&lt;/td&gt;&lt;td&gt;Deterministic ships; histogram only as a non-suppressing cut-point refinement&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;B predicate architecture&lt;/td&gt;&lt;td&gt;status-gated Skip&lt;/td&gt;&lt;td&gt;separate &lt;code&gt;isActionableAnswer&lt;/code&gt;&lt;/td&gt;&lt;td&gt;Complementary — timeless &lt;code&gt;p.replied&lt;/code&gt;/&lt;code&gt;inConversation&lt;/code&gt; fact + age-windowed freshness for pin/count/warm; Skip gates on status alone&lt;/td&gt;&lt;/tr&gt;
+&lt;tr&gt;&lt;td&gt;Auto-welcome severity&lt;/td&gt;&lt;td&gt;pre-existing note&lt;/td&gt;&lt;td&gt;literal-invariant blocker&lt;/td&gt;&lt;td&gt;Real timer-send today but pre-existing, opt-in, self-limiting, fuzz-exempt; out of A/B/C scope — flag and close separately&lt;/td&gt;&lt;/tr&gt;
+&lt;/table&gt;
+
+&lt;h2&gt;Release recommendation&lt;/h2&gt;
+&lt;p&gt;Ship &lt;b&gt;C&lt;/b&gt; immediately (&lt;code&gt;total == shown == 50&lt;/code&gt; only). Ship &lt;b&gt;A&lt;/b&gt; only with the exact 3-cut partition, enqueue-only result handling, singleton termination, and the existing serialization guards preserved. Ship &lt;b&gt;B&lt;/b&gt;&#x27;s UX only with Skip gated on &lt;code&gt;status == &quot;invited&quot;&lt;/code&gt; (age-independent), a freshness predicate separate from the timeless conversation fact, inbound-reply timestamps (never migration time) for aging, an explicit skip-then-reply policy (F7), and no &lt;code&gt;p.t&lt;/code&gt; overwrite for contacted rows (F8).&lt;/p&gt;
+&lt;/body&gt;&lt;/html&gt;
+```</div></article></section>
+<section class="footnotes"><h2>Footnotes</h2><p>answer order seen by deepseek: 1,2</p><p>answer order seen by gpt-5.6-sol: 1,2</p><p>answer order seen by grok: 1,2</p></section>
+</main></body></html>

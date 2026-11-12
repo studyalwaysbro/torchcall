@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Quorum transcript</title>
+<style>
+:root {
+  color-scheme: light;
+  --ink: #172026;
+  --muted: #5b6770;
+  --line: #d9e1e6;
+  --panel: #f8fafb;
+  --accent: #145c9e;
+  --warn: #a4321f;
+}
+* { box-sizing: border-box; }
+body {
+  margin: 0;
+  background: #ffffff;
+  color: var(--ink);
+  font: 15px/1.45 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+}
+main { max-width: 1180px; margin: 0 auto; padding: 28px 18px 44px; }
+header { border-bottom: 1px solid var(--line); margin-bottom: 20px; padding-bottom: 14px; }
+h1 { font-size: 28px; margin: 0 0 8px; letter-spacing: 0; }
+h2 { font-size: 18px; margin: 24px 0 10px; letter-spacing: 0; }
+h3 { font-size: 15px; margin: 0 0 8px; letter-spacing: 0; }
+.question { margin: 0; color: var(--muted); white-space: pre-wrap; }
+.grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 12px; }
+.card, .panel {
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--panel);
+  padding: 12px;
+}
+.pre {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 13px;
+}
+.badges { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.badge {
+  display: inline-block;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: #ffffff;
+  color: var(--ink);
+  padding: 2px 8px;
+  font-size: 12px;
+}
+.objection .panel { border-left: 4px solid var(--warn); background: #fff7f5; }
+.flip { border-left: 4px solid var(--accent); padding-left: 8px; font-weight: 650; }
+.footnotes { color: var(--muted); font-size: 12px; border-top: 1px solid var(--line); margin-top: 24px; padding-top: 10px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px; }
+.metric { font-size: 24px; font-weight: 700; }
+.hint { color: var(--muted); font-size: 12px; margin-top: 4px; }
+.warning { border: 1px solid #f0a99d; border-left: 4px solid var(--warn); background: #fff5f2; padding: 12px; border-radius: 8px; }
+table { border-collapse: collapse; width: 100%; font-size: 13px; }
+th, td { border: 1px solid var(--line); padding: 7px 8px; text-align: right; }
+th:first-child, td:first-child { text-align: left; }
+th { background: #eef3f6; }
+ul { margin-top: 8px; padding-left: 20px; }
+</style>
+</head>
+<body><main>
+<header><h1>Quorum transcript</h1><p class="question">You are reviewing a World of Warcraft addon bug on the private server &quot;WoW: Forever&quot; (a Classic-Plus server whose client is built from a modern retail-derived UI source; internal game type &quot;camelot&quot;, build 1.60.1). The addon is &quot;Torchcall&quot;, a guild-recruiting tool. It finds unguilded players by issuing /who searches, then shows them in a list for the recruiter to whisper/invite ONE AT A TIME with a button press.
+
+HARD INVARIANT (do not propose breaking it): Torchcall is strictly press-driven. No timers send anything, no auto-advance. The game itself blocks chat/who sent by an addon without a hardware event. This is stated 3x in the README and enforced by a 750k-step fuzz suite (&quot;nothing sent outside a press&quot;).
+
+THE BUG (regression beta -&gt; live): On the now-dead beta client, who-search worked. On the live client, the user searches, the native Blizzard WHO window pops open, but NO results ever land in Torchcall. The addon&#x27;s own log is full of ADDON_ACTION_FORBIDDEN / ADDON_ACTION_BLOCKED events attributed to Torchcall (logged as &quot;refused: UNKNOWN()&quot;), clustered on the ~5s who cadence (WHO_GAP=5). Nothing is added to the prospect list.
+
+GROUND TRUTH FROM THE LIVE CLIENT&#x27;S OWN UI SOURCE (build 1.60.1.70790):
+- C_FriendList.SendWho is flagged `HasRestrictions = true` and `SecretArguments = &quot;AllowedWhenUntainted&quot;`.
+- C_FriendList.SetWhoToUi has NO HasRestrictions (just RequiresFriendList).
+- SendChatMessage carries the SAME flags as SendWho (HasRestrictions=true, SecretArguments=&quot;AllowedWhenUntainted&quot;, plus RestrictedForMacroChatMessages). Torchcall&#x27;s whispers (SendChatMessage) are believed to still work from button presses on live.
+- The 2-ARG form `C_FriendList.SendWho(text, Enum.SocialWhoOrigin.X)` is what the `/who` slash command and the FriendsFrame use.
+- The 3-ARG form `C_FriendList.SendWho(text, origin, filters)` where `filters` is a SendWhoFilters table ({classIDs=..., raceIDs={}, uiMapIDs={}}) is used ONLY by Blizzard&#x27;s secure GroupFinder WhoList code (LFGWhoListFilterUtil.GetWhoFilters()).
+
+TORCHCALL&#x27;S CURRENT CODE (the failing path): on a Search/Continue button OnClick it runs:
+  setWhoToUi(true)                       -- C_FriendList.SetWhoToUi(true), to receive WHO_LIST_UPDATE
+  C_FriendList.SendWho(queryText(q), origin, filters)   -- 3-ARG, filters table built by addon code
+Then on WHO_LIST_UPDATE it reads C_FriendList.GetNumWhoResults()/GetWhoInfo(i) and sets SetWhoToUi back. The user&#x27;s config has whoMode=&quot;exclude&quot;, which makes whoFilters() return the classIDs table -&gt; the 3-arg form is used. Torchcall ALSO supports a text path: queryText() already encodes class as `c-&quot;Mage&quot;` in the query string, and whoMode &quot;text&quot;/&quot;local&quot; make whoFilters() return nil -&gt; the existing 2-arg branch `SendWho(queryText, origin)` is taken.
+
+COMPETING HYPOTHESES FOR WHY IT&#x27;S BLOCKED:
+(A) The 3-arg `filters` TABLE is the trigger. Passing an addon-constructed table argument to a function marked SecretArguments=&quot;AllowedWhenUntainted&quot; taints the call, so the client blocks it. The 2-arg text form (no table) used by /who is NOT blocked. FIX: never pass the filters table on this client; use 2-arg SendWho(queryText, origin) with the class encoded in the query text (c-&quot;Mage&quot;), issuing one who per class when multiple classes are picked. This is already a supported code path (whoMode text/local).
+(B) The restriction is about hardware-event/taint on SendWho generally; even the 2-arg form from an addon&#x27;s OnClick is blocked, so Torchcall fundamentally cannot /who on this client regardless of args. If so, a different mechanism is needed (e.g., a SecureActionButton-style trigger, or giving up programmatic who and guiding the user).
+
+QUESTIONS:
+1. Which hypothesis is correct for a modern retail-derived WoW client, given SendChatMessage (same flags) works from an addon button press but the 3-arg SendWho does not? Is the SendWhoFilters table argument specifically what trips SecretArguments/taint, while the 2-arg form is callable by an addon from a genuine hardware event?
+2. If we drop the filters table and use the 2-arg text form (c-&quot;Mage&quot; per class), will who results reliably return to the addon via WHO_LIST_UPDATE + GetNumWhoResults/GetWhoInfo while SetWhoToUi(true)? Any gotcha with SetWhoToUi vs the native who window stealing/receiving the event?
+3. How should Torchcall SELF-HEAL so this never silently fails again: detect an ADDON_ACTION_FORBIDDEN/BLOCKED that coincides with a just-sent who, automatically fall back to the 2-arg text mode, persist that choice, and surface a clear one-line message to the recruiter instead of a dead &quot;nothing found&quot;? Is matching the blocked event to our own in-flight who by a short time window reliable enough?
+4. Any correctness or taint pitfalls in calling SetWhoToUi(true) then SendWho from addon code, and in restoring SetWhoToUi to the native window&#x27;s state afterward?
+
+Give a concrete recommended fix, ranked, with the reasoning tied to the restriction flags above. Keep the press-driven invariant intact.</p></header>
+<section><h2>Blind Answers</h2><div class="grid"><article class="card"><h3>deepseek</h3><div class="badges"></div><div class="pre">I&#x27;ve read the actual code (`Torchcall/Core.lua` who path, `actionRefused`, the `WHO_LIST_UPDATE` handler, and the mock/fuzz guards). The question maps exactly onto real code at `Core.lua:593-643` (send), `Core.lua:509-528` (filters/query text), `Core.lua:670-786` (results), and `Core.lua:1313-1330` (`actionRefused`). Here is the analysis.
+
+## 1. Which hypothesis is correct
+
+**Hypothesis A is correct** — the 3-arg `filters` table is the trigger, and the 2-arg text form is callable from a genuine hardware event. The decisive evidence is the flag *parity* with `SendChatMessage`:
+
+- `SendWho` and `SendChatMessage` carry the **same** `HasRestrictions = true` and `SecretArguments = &quot;AllowedWhenUntainted&quot;`. SendChatMessage demonstrably still works from a button press on live.
+- Therefore those two flags do **not** encode &quot;addons may never call this.&quot; They encode: *the call must happen in a restricted-but-valid context* (a hardware event — the anti-bot, no-timer rule), *and one or more parameters are &quot;secret&quot;* — internal Blizzard-shaped arguments accepted only when untainted.
+- The only structural difference in the failing call is the third argument. `SendWhoFilters` (`{classIDs=…, raceIDs=…, uiMapIDs=…}`) is a structured type produced only by Blizzard&#x27;s secure GroupFinder WhoList path (`LFGWhoListFilterUtil.GetWhoFilters()`). An addon-built table is tainted, so the client refuses the whole call and fires `ADDON_ACTION_BLOCKED/FORBIDDEN` attributed to Torchcall (logged `UNKNOWN()` because `SendWho` is a C function with no Lua name).
+- The 2-arg form `SendWho(text, origin)` is exactly what `/who` and FriendsFrame use, and its arguments are a plain string + an enum — no secret table. It sits on the same footing as the whisper string in `SendChatMessage`, which the client accepts. So it is the addon-callable path.
+
+Hypothesis B is contradicted: it can&#x27;t explain why `SendChatMessage` (identical flags) survives while predicting `SendWho` is blanket-blocked. The restriction is per-argument (the table), not per-function.
+
+Your code already has the fix on hand: `whoFilters()` returns `nil` for `whoMode == &quot;text&quot;` (`Core.lua:511`), which drops you into the 2-arg branch (`Core.lua:620`), and `StartSearch` already splits multi-class searches into one-per-class for text mode (`Core.lua:659-662`).
+
+## 2. Will the 2-arg text form reliably return results?
+
+Yes — on modern retail-derived semantics, `SendWho(text, origin)` from a genuine OnClick delivers results via `WHO_LIST_UPDATE`, and `C_FriendList.GetNumWhoResults()`/`GetWhoInfo(i)` are readable regardless of the `SetWhoToUi` toggle. The toggle only decides whether the **native** WhoListFrame also displays them; it does not route results exclusively. Two gotchas:
+
+- **`SetWhoToUi(true)` is backwards for you.** That&#x27;s precisely why the native WHO window pops open. `SetWhoToUi` has no `HasRestrictions`, so it&#x27;s freely callable, but `true` means &quot;the default frame is the consumer/display.&quot; The addon-owned-list pattern (WhoLib et al.) is `SetWhoToUi(false)`: results still reach you, the native frame stays out of the way. Your current `setWhoToUi(true)` at `Core.lua:614` is the reason the window appears. On this custom client verify once that `WHO_LIST_UPDATE` still carries data with `false`; if (non-standard) it doesn&#x27;t, keep `true` and treat the pop-up as cosmetic. But the documented modern behavior is false ⇒ still delivered to addons.
+- **`WHO_LIST_UPDATE` is shared, not owned.** You already handle this correctly with the `pending` guard (`Core.lua:674`) and the `onForeignWho` hook (`Core.lua:458-465`, registered at `1855`), so a `/who` the user types or another addon&#x27;s search won&#x27;t poison your list. Keep that. Also distinguish &quot;query returned zero&quot; (`WHO_LIST_UPDATE` with `GetNumWhoResults()==0`) from &quot;never answered&quot; (no event → your 6s `WHO_TIMEOUT` re-queue at `Core.lua:635`).
+
+The text encoding `c-&quot;Mage&quot;` is already emitted by `queryText` (`Core.lua:523`), and your existing &quot;server ignored the class part&quot; machinery (`Core.lua:746-752`) still applies to the text path.
+
+## 3. Self-heal design
+
+Key insight: **the refusal is an event, not a Lua error.** Your `pcall` at `Core.lua:619-621` *succeeds* — the C call returns normally and the block arrives asynchronously as `ADDON_ACTION_BLOCKED/FORBIDDEN`. So the `if not ok then` branch at `Core.lua:622` never fires for this failure, `pending` gets set, and the user sees &quot;Searching…&quot; then the 6-second timeout&#x27;s &quot;slow to answer — press Continue.&quot; That&#x27;s the dead &quot;nothing found.&quot; Detection must live in `actionRefused` (`Core.lua:1313`).
+
+Concrete self-heal, as the first branch of `actionRefused`:
+
+```lua
+local function actionRefused(addon, what)
+  if addon ~= ADDON then return end
+  ns.Log(&quot;refused&quot;, tostring(what))
+
+  -- Our own in-flight who was refused by the client. Ask in words instead.
+  if pending then
+    pending = nil
+    if TorchcallDB.opts.whoMode ~= &quot;text&quot; then
+      TorchcallDB.opts.whoMode = &quot;text&quot;          -- persisted in SavedVariables
+      -- queue items still carry the plural .classes form, which queryText cannot render;
+      -- rebuild them one-class-per-search (same logic as Core.lua:717-732).
+      local plan = {}
+      for _, item in ipairs(queue) do
+        if item.classes then
+          for _, token in ipairs(item.classes) do
+            plan[#plan + 1] = { lo = item.lo, hi = item.hi, class = token, race = item.race, zone = item.zone }
+          end
+        else
+          plan[#plan + 1] = item
+        end
+      end
+      queue = plan
+      ns.Log(&quot;who&quot;, &quot;filters table refused by the client, now asking by words&quot;)
+    end
+    setWhoToUi(false)
+    note(&quot;The game blocked that search&#x27;s filter, so it asks in words now. Press Continue.&quot;)
+    return
+  end
+  chatRefused = true
+  ...
+end
+```
+
+Reliability of matching, ranked by strength:
+
+1. **`addon == ADDON`** (already the first check) — authoritative attribution.
+2. **`pending ~= nil`** — the primary discriminator. It is set exactly when one who of ours is outstanding (`Core.lua:631`) and cleared on `WHO_LIST_UPDATE` (`Core.lua:678`) or timeout. A blocked *whisper* coincides with no `pending` who, so it won&#x27;t be misread as a who-block. This is more reliable than a wall-clock window.
+3. **Time window is only a secondary guard**, not the primary signal. The event fires essentially immediately after the offending call, so `pending` + (optionally `GetTime() - lastWho &lt; WHO_TIMEOUT`) is plenty. Do **not** key on the `what` string: it&#x27;s `&quot;UNKNOWN()&quot;` for C calls on live, so your existing `what:find(&quot;Who&quot;)` check at `Core.lua:1318` never matches (that&#x27;s why the current handler does nothing useful here).
+
+**Do not re-send from `actionRefused`** — that&#x27;s a non-hardware-event context, so a retry there would itself be blocked and would violate the press-driven invariant. Flip the persisted mode and message; the *next* Continue/Search press sends via 2-arg. This keeps the 750k-step fuzz invariant intact (the fuzz mock fires `ADDON_ACTION_FORBIDDEN` from timers precisely to catch any send off-press — your handler sends nothing).
+
+One interaction to preserve: clearing `pending` makes the in-flight `WHO_TIMEOUT` timer no-op (`pending ~= q` at `Core.lua:636`), so it won&#x27;t overwrite your note or re-queue a duplicate. And the existing test at `tests/run.lua:1524` (a who-refusal must not un-welcome a prospect) stays green because the `pending` branch returns before the welcome-revert logic — and in that test `pending` is nil anyway.
+
+## 4. SetWhoToUi / restore pitfalls
+
+- There is **no public getter** for the native toggle, so &quot;restore to the native window&#x27;s state&quot; can only be approximated. Your `setWhoToUi(false)` (`Core.lua:575-581`) reconstructs it by checking `LFGWhoListFrame/WhoFrame:IsShown()` — reasonable, but it&#x27;s a guess and can clobber the frame&#x27;s own show/hide bookkeeping.
+- The native frame sets `SetWhoToUi(true)` when its who tab is shown and `false` when hidden. So the least-surprising policy is: **never set `true`**; set `false` around your own consumption and leave it. When the user actually opens the native who tab, Blizzard&#x27;s frame re-asserts `true` itself. You don&#x27;t need to restore anything.
+- **Taint/ordering:** call `SetWhoToUi` and `SendWho` only inside the OnClick hardware-event path. Deferring either through `C_Timer.After` moves it off a hardware event and off-press — that is the invariant, and the fuzz suite enforces it. Building the query string from SavedVariables/config is fine: strings aren&#x27;t &quot;secret&quot;; the same mechanism that lets your whisper text through lets the `c-&quot;Mage&quot;` text through. The taint is specifically the structured table argument.
+
+## Recommended fix, ranked
+
+1. **Root fix — never build/pass the `SendWhoFilters` table on this client.** Force the text path. Two prongs, both cheap:
+   - Migration in `initDB` (near `Core.lua:152`): if build is `camelot`/1.60.1, set `whoMode = &quot;text&quot;` (and don&#x27;t let the default rewrite it back to `&quot;exclude&quot;`). This fixes the user&#x27;s already-saved `&quot;exclude&quot;`.
+   - Belt-and-suspenders in `whoFilters()` (`Core.lua:509`): `if &lt;this client&gt; then return nil end` — the 3-arg branch is never taken again. Optionally keep the 3-arg path behind a persisted capability flag for other clients, but on Forever it&#x27;s dead.
+   
+   The per-class splitting, `c-&quot;Mage&quot;` encoding, and result filtering already exist; no new query machinery is needed.
+
+2. **Self-heal in `actionRefused`** (as above): `pending`-gated flip to `whoMode=&quot;text&quot;`, rebuild plural `classes` queue items to one-per-class, clear `pending`, `setWhoToUi(false)`, log + one-line message, return before the welcome logic. No send from the handler.
+
+3. **Stop calling `setWhoToUi(true)`.** Use `setWhoToUi(false)` for addon-owned consumption so the native window doesn&#x27;t pop and doesn&#x27;t compete; keep the `IsShown()`-based restore only if you must mirror legacy behavior, otherwise just leave `false`.
+
+4. **Keep the invariant explicit:** the fallback mutates a saved var and shows a note only; the actual re-send is the user&#x27;s next press. Add a fuzz/unit assertion that a `ADDON_ACTION_BLOCKED` during a `pending` who produces zero `M.sentWho`/`M.sentChat` and flips `whoMode` to `&quot;text&quot;`.
+
+Net effect: Search/Continue goes out as 2-arg `SendWho(&quot;60-60 c-\&quot;Mage\&quot;&quot;, origin)`, results land via `WHO_LIST_UPDATE`+`GetWhoInfo` with `SetWhoToUi(false)`, and if a future client ever blocks a search again the addon flips itself to text mode and says so in one line instead of going quiet — all without a single send that didn&#x27;t come from a press.</div></article><article class="card"><h3>gpt-5.5</h3><div class="badges"></div><div class="pre">Verdict: choose hypothesis A’s fix. On Forever, Torchcall should stop using the three-argument structured-filter overload and always send two-argument text queries from the button press.
+
+One important nuance: `SecretArguments = &quot;AllowedWhenUntainted&quot;` does not itself mean “addon-created tables are forbidden.” It governs actual secret values. The evidence nevertheless strongly identifies the third argument as the compatibility boundary—probably an overload-specific taint/restriction check intended for Blizzard’s secure GroupFinder path.
+
+### 1. Which hypothesis is correct?
+
+A is correct operationally, with high confidence.
+
+Forever’s generated API declares `SendWho(filter, origin, filters)` with `HasRestrictions`, `AllowedWhenUntainted`, and the optional `SendWhoFilters` structure. By contrast, Blizzard’s ordinary WHO edit box calls exactly:
+
+```lua
+C_FriendList.SendWho(text, Enum.SocialWhoOrigin.Social)
+```
+
+with no table. [Forever FriendList API definition](https://github.com/Gethe/wow-ui-source/blob/forever/Interface/AddOns/Blizzard_APIDocumentationGenerated/FriendListDocumentation.lua), [Forever FriendsFrame caller](https://github.com/Gethe/wow-ui-source/blob/forever/Interface/AddOns/Blizzard_FriendsFrame/Mainline/FriendsFrame.lua#L1492-L1495)
+
+The reasoning is:
+
+- `HasRestrictions` accounts for the hardware-event requirement. Torchcall is already inside a genuine `OnClick`.
+- Torchcall’s working button-press whispers are strong corroboration that the click context is valid: `SendChatMessage` carries the same general restriction and secret-argument flags. [Forever ChatInfo API definition](https://github.com/Gethe/wow-ui-source/blob/forever/Interface/AddOns/Blizzard_APIDocumentationGenerated/ChatInfoDocumentation.lua)
+- The failure varies with `whoMode`: structured table path fails, existing text path avoids that argument.
+- Blizzard uses the table overload only from secure GroupFinder code.
+
+So: the table/three-argument path is almost certainly what trips the restriction, but describe it as an overload-specific taint restriction—not as a logical consequence of `SecretArguments` alone.
+
+A `SecureActionButton` is unnecessary and probably unhelpful. There is no standard secure action type for arbitrary WHO queries, and Torchcall already possesses the required hardware event.
+
+### 2. Will the two-argument path return results?
+
+Yes, provided the server accepts and processes the query.
+
+The correct sequence is:
+
+```lua
+C_FriendList.SetWhoToUi(true)
+C_FriendList.SendWho(queryText, Enum.SocialWhoOrigin.Social)
+```
+
+Then, on `WHO_LIST_UPDATE`, immediately copy:
+
+```lua
+local count = C_FriendList.GetNumWhoResults()
+for i = 1, count do
+    local info = C_FriendList.GetWhoInfo(i)
+    -- copy the needed fields now
+end
+```
+
+The native WHO window cannot “steal” the event. WoW events are broadcast to every registered frame. Blizzard’s `FriendsFrame` registers `WHO_LIST_UPDATE`, reads the same result buffer, and deliberately opens the WHO panel. That popup is expected behavior, not evidence that Torchcall lost the event. [event registration and handler](https://github.com/Gethe/wow-ui-source/blob/forever/Interface/AddOns/Blizzard_FriendsFrame/Mainline/FriendsFrame.lua#L266-L273), [WHO result reader and window opening](https://github.com/Gethe/wow-ui-source/blob/forever/Interface/AddOns/Blizzard_FriendsFrame/Mainline/FriendsFrame.lua#L999-L1016)
+
+The real gotchas are:
+
+- WHO results are global and `WHO_LIST_UPDATE` has no query ID. A manual `/who` or another addon can race Torchcall.
+- A throttled request may be silently dropped. “No event” is not the same as “zero results.”
+- Only report “0 results” after receiving `WHO_LIST_UPDATE` with `GetNumWhoResults() == 0`.
+- Build class tokens with the client-localized class name, ideally using `WHO_TAG_CLASS` and `GetClassInfo(classID)`, rather than hard-coding English.
+- Multiple selected classes require separate queries because text WHO supports only one class term. Each query must remain one explicit Search/Continue press.
+
+### 3. Self-healing design
+
+The best fix is to default Forever directly to the two-argument transport. Do not make every user trigger the known-bad call once.
+
+Keep filter semantics separate from transport:
+
+```lua
+db.whoMode       -- user&#x27;s filtering choice
+db.whoTransport  -- &quot;text2&quot;, &quot;filters3&quot;, or &quot;manual&quot;
+```
+
+For Torchcall’s Forever-only build, initialize or migrate `whoTransport = &quot;text2&quot;`.
+
+Still add a fallback detector for future clients or old saved configurations. Do not rely primarily on a time window: both restricted-action events are documented as synchronous, so an exact call-active sentinel is much stronger. [Forever RestrictedActions events](https://github.com/Gethe/wow-ui-source/blob/forever/Interface/AddOns/Blizzard_APIDocumentationGenerated/RestrictedActionsDocumentation.lua)
+
+Conceptually:
+
+```lua
+activeWhoCall = attempt
+C_FriendList.SendWho(text, origin, filters)
+activeWhoCall = nil
+```
+
+In `ADDON_ACTION_BLOCKED`/`FORBIDDEN`:
+
+```lua
+if activeWhoCall
+   and blamedAddon == ADDON_NAME
+   and activeWhoCall.transport == &quot;filters3&quot;
+then
+    activeWhoCall.blocked = true
+    db.whoTransport = &quot;text2&quot;
+    db.whoTransportReason = &quot;structured-filters-blocked&quot;
+end
+```
+
+Because the event is synchronous, even `UNKNOWN()` is a sufficiently strong match while `activeWhoCall` is set around exactly one API call. A fallback time check—perhaps under 0.5 seconds—can be retained defensively, but a five-second window is too broad and could misattribute unrelated taint.
+
+After the blocked call returns:
+
+- Restore WHO routing.
+- Leave the current query at the head of the queue.
+- Do not start the WHO cooldown as though a request succeeded.
+- Show:
+
+&gt; WHO filter API was blocked; Torchcall switched to compatible text search. Press Search again.
+
+Crucially, do not resend from the event handler. The compatible retry occurs only on the recruiter’s next press.
+
+Also distinguish three terminal states:
+
+- Blocked: downgrade transport and ask for another press.
+- `WHO_LIST_UPDATE` with zero rows: legitimate “nothing found.”
+- No response after a conservative UI-only watchdog: “No WHO reply—possibly throttled. Press Continue to retry.”
+
+That watchdog may update status and restore routing, but must never send or advance the queue.
+
+If the two-argument form itself ever produces a synchronous block, persist `whoTransport = &quot;manual&quot;` and show the exact native `/who` query for the user. That is the contingency for hypothesis B, not the expected live behavior.
+
+### 4. `SetWhoToUi` and taint/state restoration
+
+Calling `SetWhoToUi(true)` immediately before `SendWho` is appropriate. It lacks `HasRestrictions`; passing literal `true` or `false` does not involve secret data.
+
+Treat it as a short global lease:
+
+1. Set `true` immediately before the button-driven send.
+2. Read and copy results on `WHO_LIST_UPDATE`.
+3. Set `false` after the result, a synchronous block, cancellation, or a conservative no-response timeout.
+
+There is no documented getter for the current `whoToUi` flag, so Torchcall cannot perfectly snapshot and restore another addon’s setting. WHO-window visibility is not the same thing as that routing flag. Returning to `false` after Torchcall’s request is the least surprising default; it does not close an already-open native window.
+
+Avoid:
+
+- Temporarily unregistering Blizzard’s `FriendsFrame` events.
+- Hooking or replacing `/who` handlers.
+- Trying to cleanse the table with `securecallfunction`, `CopyTable`, or `table.freeze`.
+- Hiding the native window during its event handler, especially in combat.
+
+### Ranked recommended change
+
+1. Remove the three-argument call from Torchcall’s Forever path. Always use `SendWho(text, origin)`.
+2. Expand selected classes into queued one-class text searches; each Search/Continue press sends exactly one.
+3. Add the synchronous call-active block detector and persist a one-way downgrade to `text2`; never retry automatically.
+4. Separate blocked, timed-out/throttled, and genuine-zero-result UI states.
+5. Treat `SetWhoToUi` as a scoped global lease and copy WHO results immediately.
+6. Add regression tests proving that block handling, timeouts, and multi-class continuation never send or auto-advance outside a press.
+
+This preserves the hard invariant completely while using the same public WHO path as Blizzard’s ordinary UI.</div></article></div></section>
+<section><h2>Critiques</h2><article class="panel"><h3>deepseek</h3><div class="pre">Findings are persisted. Summary of the logging outcome:
+
+- **Requested council-log path** (`/home/yeeterson/projects/Asset-Cluster-Migration/logs/council/…`) and the **research inbox** (`/home/yeeterson/.openclaw/workspace/logs/research-inbox.md`) are both outside this session&#x27;s working directory, and both writes are pending a permission grant I don&#x27;t have — so I couldn&#x27;t write them there directly.
+- **Where I did log:** the full verdict, code-verified findings, and ranked fix are saved to project memory at `memory/council-2026-11-05-torchcall-who-block-regression.md`, with the index updated in `MEMORY.md` (linked to the existing 2026-11-05 auto-chain councils, since they share the same `SendWho` restriction surface).
+
+If you want them also placed in the Asset-Cluster-Migration council dir or the research inbox, approve those writes and I&#x27;ll drop the same markdown there verbatim.
+
+One line for the inbox-worthy list, if you later care: the `whoMode`-vs-`whoTransport` separation (transport as a persisted capability flag independent of the user&#x27;s filter choice) generalizes to any addon whose saved filter semantics can&#x27;t be conflated with which API overload is callable on a given private-server client — worth a cross-project note if other &quot;Forever&quot;-family addons hit the same 3-arg-vs-2-arg restriction boundary.</div></article><article class="panel"><h3>gpt-5.5</h3><div class="pre">## Verdict
+
+Answer 1 is materially stronger and should control the fix. Both answers reach the right operational conclusion—use two-argument text WHO—but Answer 2 contains two implementation errors that could keep the regression alive.
+
+### Where they agree
+
+Both correctly recommend:
+
+- Treat hypothesis A as the leading explanation and stop passing the structured `SendWhoFilters` table on Forever.
+- Send `C_FriendList.SendWho(text, origin)` directly from the recruiter’s button press.
+- Encode each class as `c-&quot;Mage&quot;` and expand multiple classes into separate, press-driven queries.
+- Persist the compatibility downgrade.
+- Never retry from `ADDON_ACTION_BLOCKED/FORBIDDEN`; only change state and tell the user to press again.
+- Distinguish a block, a missing/throttled response, and an actual `WHO_LIST_UPDATE` containing zero rows.
+- Treat WHO results as global/shared and therefore vulnerable to manual `/who` or another addon racing the request.
+
+### Where they diverge
+
+1. Certainty about hypothesis A
+
+Answer 1 is better calibrated. `SecretArguments = &quot;AllowedWhenUntainted&quot;` does not mean that an ordinary addon-created table is automatically a secret or forbidden value. It only governs calls that actually contain secret values. Therefore the metadata alone does not prove “table argument ⇒ blocked.”
+
+The evidence still strongly favors an overload-specific restriction:
+
+- The failing path adds only the third structured argument.
+- Blizzard’s ordinary WHO interface uses the two-argument form.
+- The structured overload appears confined to Blizzard’s secure GroupFinder code.
+- `SendChatMessage` demonstrates that `HasRestrictions` does not mean “never callable by addons.”
+
+But Answer 2 overstates this as deductive certainty and says hypothesis B is “contradicted.” It is merely disfavored until the two-argument path is exercised on the live client. [The generated API exposes the optional structured argument and the restriction flags](https://github.com/Gethe/wow-ui-source/blob/forever/Interface/AddOns/Blizzard_APIDocumentationGenerated/FriendListDocumentation.lua), while [the native WHO edit box uses two arguments](https://github.com/Gethe/wow-ui-source/blob/forever/Interface/AddOns/Blizzard_FriendsFrame/Mainline/FriendsFrame.lua#L1492-L1495).
+
+2. `SetWhoToUi`
+
+Answer 1 is correct; Answer 2 is not.
+
+`SetWhoToUi(true)` forces delivery through `WHO_LIST_UPDATE`. With `false`, small result sets may instead arrive as `CHAT_MSG_SYSTEM`, so Torchcall cannot reliably depend on `WHO_LIST_UPDATE`. It also does not reliably suppress the native window. [The API behavior is explicitly documented here](https://warcraft.wiki.gg/wiki/API%3AC_FriendList.SetWhoToUi).
+
+The native frame does not “steal” the event—events are broadcast—but its handler reads the same result buffer and opens the WHO panel unconditionally when it receives `WHO_LIST_UPDATE`. [Forever’s handler does exactly that](https://github.com/Gethe/wow-ui-source/blob/forever/Interface/AddOns/Blizzard_FriendsFrame/Mainline/FriendsFrame.lua#L999-L1016).
+
+Therefore Answer 2’s proposed “always use `SetWhoToUi(false)`” could turn legitimate searches with one to three results into apparent timeouts.
+
+3. Block-event correlation
+
+Answer 1’s call-active sentinel is correct. Answer 2’s `pending` test is racy—and probably nonfunctional with the described current ordering.
+
+`ADDON_ACTION_BLOCKED` and `ADDON_ACTION_FORBIDDEN` are documented as synchronous events. [See the generated restricted-action declarations](https://github.com/Gethe/wow-ui-source/blob/forever/Interface/AddOns/Blizzard_APIDocumentationGenerated/RestrictedActionsDocumentation.lua). If Torchcall assigns `pending` only after `SendWho` returns, then `actionRefused()` runs while `pending` is still nil.
+
+The correct ordering is conceptually:
+
+```lua
+activeWhoCall = attempt
+C_FriendList.SendWho(...)
+activeWhoCall = nil
+```
+
+The refusal handler marks `activeWhoCall.blocked` but sends nothing. A short post-call time window may remain as defensive backup, but it should not be the primary correlation mechanism.
+
+### Strongest line of reasoning
+
+Answer 1’s synchronous call-active sentinel is the strongest reasoning in either answer. It uses the client’s declared event semantics to identify the exact rejected call without guessing from `UNKNOWN()` or a five-second window, while guaranteeing that fallback cannot resend outside a hardware event.
+
+### Weakest line of reasoning
+
+Answer 2’s claim that `SetWhoToUi(false)` still reliably delivers results to Torchcall while keeping Blizzard’s UI out of the way is the weakest. It directly conflicts with the API’s routing semantics and can suppress `WHO_LIST_UPDATE` for small result sets.
+
+## Recommended composite fix
+
+1. Make two-argument text WHO the default and only Forever transport now; do not deliberately attempt the known-bad overload first.
+2. Keep `SetWhoToUi(true)` through receipt of the result so `WHO_LIST_UPDATE` is reliable.
+3. Copy `GetNumWhoResults`/`GetWhoInfo` immediately in the event handler.
+4. Wrap `SendWho` in a pre-call `activeWhoCall` sentinel.
+5. On a synchronous block:
+   - persist the downgrade;
+   - retain/rebuild the current query;
+   - restore WHO routing best-effort;
+   - display “WHO filter API was blocked; switched to compatible search. Press Continue.”
+   - send nothing.
+6. If the two-argument form is also blocked, persist a manual-WHO fallback rather than attempting secure-button tricks.
+7. Because there is no getter for the WHO-routing flag, treat restoration as best-effort ownership. Snapshot any native-window heuristic before the send; do not infer the prior state after the result has opened the window.
+8. Add regression tests specifically proving:
+   - synchronous refusal is detected before `pending` exists;
+   - refusal handlers send and advance nothing;
+   - one-to-three-result searches still use `WHO_LIST_UPDATE`;
+   - multi-class searches send exactly one query per subsequent press.
+
+That keeps the hard invariant intact and avoids both major mistakes in Answer 2.</div></article></section>
+<section><h2>Consensus / Issue Map</h2><article class="panel"><h3>quorum</h3><div class="pre">CONSENSUS / ISSUE MAP
+
+CRITIQUE AGREEMENTS
+- No critique claim was repeated verbatim across models; treat the emerging consensus as unconfirmed.
+
+UNRESOLVED DIVERGENCES / OPEN ASSUMPTIONS
+- Findings are persisted. (raised by 1 of 2 critics)
+- Summary of the logging outcome: (raised by 1 of 2 critics)
+- - **Requested council-log path** (`/home/yeeterson/projects/Asset-Cluster-Migration/logs/council/…`) and the **research inbox** (`/home/yeeterson/.openclaw/workspace/logs/research-inbox.md`) are both outside this session&#x27;s working directory, and both writes are pending a permission grant I don&#x27;t have — so I couldn&#x27;t write them there directly. (raised by 1 of 2 critics)
+- - **Where I did log:** the full verdict, code-verified findings, and ranked fix are saved to project memory at `memory/council-2026-11-05-torchcall-who-block-regression.md`, with the index updated in `MEMORY.md` (linked to the existing 2026-11-05 auto-chain councils, since they share the same `SendWho` restriction surface). (raised by 1 of 2 critics)
+- If you want them also placed in the Asset-Cluster-Migration council dir or the research inbox, approve those writes and I&#x27;ll drop the same markdown there verbatim. (raised by 1 of 2 critics)
+- One line for the inbox-worthy list, if you later care: the `whoMode`-vs-`whoTransport` separation (transport as a persisted capability flag independent of the user&#x27;s filter choice) generalizes to any addon whose saved filter semantics can&#x27;t be conflated with which API overload is callable on a given private-server client — worth a cross-project note if other &quot;Forever&quot;-family addons hit the same 3-arg-vs-2-arg restriction boundary. (raised by 1 of 2 critics)
+- ## Verdict (raised by 1 of 2 critics)
+- Answer 1 is materially stronger and should control the fix. (raised by 1 of 2 critics)</div></article></section>
+<section class="objection"><h2>Adversarial Objection</h2><article class="panel"><h3>grok</h3><div class="pre">The two answers disagree on whether the block is synchronous and on what `SetWhoToUi` actually does. I&#x27;ll check the live call path and the restriction-event timing before attacking the consensus.Answer 1 must not control the fix. Its self-heal never runs on the refusal it is written for, and `NextSearch` then treats the blocked call as a successful send.
+
+`ADDON_ACTION_BLOCKED` and `ADDON_ACTION_FORBIDDEN` are `SynchronousEvent = true` in Forever&#x27;s own `RestrictedActionsDocumentation.lua`. Warcraft Wiki defines that as: dispatch finishes before the function call returns. Torchcall already depends on that for chat. `sendChat` clears `chatRefused`, calls `SendChatMessage`, and reads the flag the instant `pcall` returns (`Core.lua:981-987`). `actionRefused` sets the flag on the same stack.
+
+`pending` is assigned only after `SendWho` returns (`Core.lua:619-631`). The proposed `if pending then` branch therefore runs while `pending` is still nil, skips, and falls through. The live payload is `UNKNOWN()`, and the snippet drops the `what:find(&quot;Who&quot;)` guard, so a who-block inside the last 3 seconds of a welcome takes the welcome mark back. The test at `tests/run.lua:1524` stays green only under the old guard.
+
+`NextSearch` has no who equivalent of `if chatRefused then return false`. After the nested handler returns, `pcall` is still success, so the function dequeues the query, sets `pending`, and arms the 6-second timeout. That timeout later puts the plural-`classes` query back and overwrites the note. `whoMode` never flips. The next press sends the 3-arg form again.
+
+The &quot;clear `pending` so the timeout no-ops&quot; claim is the same mistake. The timer does not exist yet when a synchronous handler runs. `NextSearch` schedules it afterward.
+
+Hypothesis A still stands as the send-path change: stop passing the filters table, and keep the retry on the next press. The detector has to be a flag set around the call and read after `pcall`, which is what `chatRefused` already does. Answer 2&#x27;s `activeWhoCall` matches that. Answer 1&#x27;s `pending` gate does not.</div></article></section>
+<section><h2>Synthesis</h2><article class="panel"><h3>deepseek</h3><div class="pre">## Verdict
+
+Hypothesis **A** is correct — the 3-arg `filters` table is the trigger, and the 2-arg text form is the callable path — with one important correction to the self-heal design. **The adversarial objection is right on the pivotal point and it changes the fix.** I verified it against the actual code and the fuzz mock.
+
+---
+
+## Q1 — Which hypothesis, and why (tied to the flags)
+
+**A. The `SendWhoFilters` table is what trips the restriction.** The 2-arg text form is callable from a genuine button press.
+
+The flag evidence only gets you partway:
+
+- `HasRestrictions = true` on **both** `SendWho` and `SendChatMessage` means &quot;must run in a restricted-but-valid context&quot; — the hardware-event rule. Torchcall&#x27;s whispers already prove a button `OnClick` is such a context, so this flag is *not* the differentiator and cannot mean &quot;addons may never call this.&quot;
+- `SecretArguments = &quot;AllowedWhenUntainted&quot;` on **both** governs *secret-typed* arguments accepted only when untainted. It does not literally mean &quot;any addon-built table is forbidden&quot; — that&#x27;s an over-reading. What it does mean, practically, is that the one structural difference in the failing call matters: the third argument `{classIDs=…, raceIDs=…, uiMapIDs=…}` is a structured type produced only by Blizzard&#x27;s secure GroupFinder path (`LFGWhoListFilterUtil.GetWhoFilters()`). An addon-constructed copy of it is tainted, so the client refuses the whole call. The 2-arg form (`text, origin`) is a plain string + enum — the exact shape `/who` and `FriendsFrame` send — and sits on the same footing as the whisper string, which the client accepts.
+
+So A is correct *operationally*: the overload, not the function, is the boundary. I&#x27;ll state the nuance the critiques insisted on rather than overclaiming: `SecretArguments` doesn&#x27;t by itself prove &quot;table ⇒ blocked&quot;; the block is best described as an overload-specific taint restriction. B is **disfavored, not falsified** — the flag parity with `SendChatMessage` makes B a poor explanation, but the 2-arg form hasn&#x27;t yet been exercised live. That&#x27;s exactly why the fix keeps a fallback that degrades to manual `/who` guidance if 2-arg is ever blocked too.
+
+The existing code already contains the fix&#x27;s machinery: `whoFilters()` returns `nil` for `whoMode == &quot;text&quot;` (`Core.lua:511`), which drops into the 2-arg branch (`Core.lua:620`), and `StartSearch` already splits multi-class searches into one-per-class for text mode (`Core.lua:659-662`).
+
+## Q2 — Does the 2-arg form return results reliably? SetWhoToUi gotcha
+
+Yes, but **`SetWhoToUi(true)` must stay.** This is where the council genuinely split, and Answer 1 got it wrong:
+
+- Answer 1 recommended switching to `SetWhoToUi(false)` (&quot;addon-owned&quot; pattern). **Wrong.** `SetWhoToUi` controls *routing*, not addon visibility: with `false`, small result sets (1–3) are delivered as `CHAT_MSG_SYSTEM` instead of firing `WHO_LIST_UPDATE`. Torchcall would read those as &quot;no answer → 6s timeout&quot; and look deader than before. `SetWhoToUi(false)` also does **not** reliably suppress the native window.
+- The current code is already right here: `setWhoToUi(true)` at `Core.lua:614`, then `setWhoToUi(false)` on receipt at `Core.lua:679`. Keep the `true`→restore lease.
+
+Other gotchas, all already handled or to keep handling:
+
+- **The native window does not &quot;steal&quot; the event.** `WHO_LIST_UPDATE` is broadcast to every registered frame; the FriendsFrame opening the WHO panel is cosmetic and independent. The reason no results ever land is that the blocked 3-arg send means `WHO_LIST_UPDATE` never fires at all — not that the window took them.
+- `GetNumWhoResults`/`GetWhoInfo` are plain getters (no `HasRestrictions`), readable regardless of the toggle; copy the fields immediately in the handler.
+- `WHO_LIST_UPDATE` carries no query id and the result buffer is global. The existing `pending` guard (`Core.lua:674`) + `onForeignWho` hook (`Core.lua:458-465`) already stop a manual `/who` or another addon from poisoning the list — keep them.
+- Multi-class text: one class per query (`c-&quot;Mage&quot;`). `queryText` already emits it (`Core.lua:523`), and the existing &quot;server ignored the class part&quot; fallback (`Core.lua:746-752`) still applies.
+
+## Q3 — Self-heal (this is where the objection overrides Answer 1)
+
+The objection is **correct, and it is decisive**: the refusal is a **synchronous event**, not a late one, so a `pending`-gated detector never fires.
+
+Proof from this codebase, not the docs alone:
+
+- `sendChat` (`Core.lua:981-987`) does `chatRefused = false; pcall(send, …); if chatRefused then return false, NEEDS_PRESS end`. Reading the flag the instant `pcall` returns only works if `ADDON_ACTION_BLOCKED/FORBIDDEN` is dispatched **inside** the call. This is the addon&#x27;s own working model of the event being synchronous.
+- The mock encodes exactly that: `tests/mock.lua:122` fires `ADDON_ACTION_FORBIDDEN` from *inside* `SendChatMessage`, before it returns, and `M.fire` (`mock.lua:226`) dispatches synchronously.
+- But `pending` is assigned **after** `SendWho` returns (`Core.lua:631`, after the `pcall` at `619-620`). So in `actionRefused`, `pending` is still `nil` when a synchronous who-block fires. Answer 1&#x27;s `if pending then …` self-heal **never runs on the failure it&#x27;s written for**.
+
+Worse, under Answer 1&#x27;s snippet, the dropped `what:find(&quot;Who&quot;)` guard means a who-block (whose live payload is `&quot;UNKNOWN()&quot;` — no &quot;Who&quot; substring) inside the 3-second welcome window would fall through to the welcome-revert and *un-welcome a recruit*. The current test at `tests/run.lua:1524` stays green only because it fires a synthetic `&quot;C_FriendList.SendWho()&quot;` string the live client never produces.
+
+So: **do not key on `pending`, and do not key on a wall-clock window.** The event is synchronous, so the correlation signal is the call-active sentinel — and Torchcall already has one:
+
+- `sendingOurs` (`Core.lua:453`) is set `true` at `Core.lua:616` and cleared at `621`, around exactly one `SendWho` call. That is the who equivalent of `chatRefused`, and `onForeignWho` already uses it to tell our call from a foreign one.
+
+### Concrete self-heal
+
+Module flag, mirroring `chatRefused`:
+
+```lua
+local whoRefused = false
+```
+
+In `actionRefused` (`Core.lua:1313`), add the sentinel check **before** the string guard and the welcome-revert:
+
+```lua
+local function actionRefused(addon, what)
+  if addon ~= ADDON then return end
+  ns.Log(&quot;refused&quot;, tostring(what))
+  chatRefused = true
+  -- Our own who call is on the stack: the game refused that search. On this client the
+  -- payload is &quot;UNKNOWN()&quot;, so the string cannot name it — the call sentinel can.
+  if sendingOurs then whoRefused = true return end
+  -- a search or invite being stopped says nothing about the welcome before it (keep as-is)
+  if type(what) == &quot;string&quot; and (what:find(&quot;Who&quot;, 1, true) or what:find(&quot;Invite&quot;, 1, true)) then return end
+  -- ... existing welcome-revert untouched ...
+end
+```
+
+In `NextSearch` (`Core.lua:616-631`), reset the flag before the call and check it right after, *before* dequeuing:
+
+```lua
+  sendingOurs = true
+  whoRefused = false
+  local filters = whoFilters(q)
+  local ok, err
+  if filters then ok, err = pcall(C_FriendList.SendWho, queryText(q), origin, filters)
+  else ok, err = pcall(C_FriendList.SendWho, queryText(q), origin) end
+  sendingOurs = false
+  if whoRefused then
+    whoRefused = false
+    setWhoToUi(false)
+    if TorchcallDB.opts.whoMode ~= &quot;text&quot; then
+      TorchcallDB.opts.whoMode = &quot;text&quot;                     -- persisted via SavedVariables
+      -- plural .classes items can&#x27;t be rendered as text: rebuild one-per-class
+      -- (same loop as the existing &quot;filter not honoured -&gt; text&quot; path, Core.lua:717-732)
+      local plan = {}
+      for _, item in ipairs(queue) do
+        if item.classes then
+          for _, token in ipairs(item.classes) do
+            plan[#plan + 1] = { lo = item.lo, hi = item.hi, class = token, race = item.race, zone = item.zone }
+          end
+        else plan[#plan + 1] = item end
+      end
+      queue = plan
+      ns.Log(&quot;who&quot;, &quot;class-filter table refused by the client, asking in words from now on&quot;)
+    end
+    note(&quot;The game blocked that search&#x27;s class filter, so Torchcall asks in words now. Press Continue.&quot;)
+    return false          -- do NOT dequeue, do NOT set pending, do NOT arm the timeout
+  end
+  if not ok then … end    -- existing error path stays
+```
+
+Three things this gets right that Answer 1 got wrong:
+
+1. **No `pending` gate.** The sentinel is `sendingOurs`, which is true during the call; the flag is read immediately after `pcall`, exactly like `chatRefused`.
+2. **No re-send from the handler.** It flips a saved var, rebuilds the queue, and messages — the actual 2-arg send is the recruiter&#x27;s next press. The press-driven invariant is untouched (the fuzz mock fires `ADDON_ACTION_FORBIDDEN` from timers precisely to catch any off-press send; this handler sends nothing).
+3. **No welcome damage.** The early `return` on `sendingOurs` fires before the welcome-revert, so a synchronous who-block can never take a welcome mark back — and the existing `what:find(&quot;Who&quot;)` guard below it still handles any (hypothetical) late who-refusal with a readable payload, keeping `tests/run.lua:1524` green.
+
+A time window is *not* the primary signal and shouldn&#x27;t be. `WHO_GAP=5`/`WHO_TIMEOUT=6` are far too broad to attribute a refusal reliably. The synchronous sentinel is exact; if you want belt-and-suspenders, a sub-second `GetTime() - lastWho` check is the most I&#x27;d add, but it&#x27;s not needed once the sentinel is in place.
+
+## Q4 — SetWhoToUi / taint pitfalls
+
+- `SetWhoToUi` has no `HasRestrictions`; literal `true`/`false` is untainted, callable from addon code. The taint is specifically the structured third argument — building the query **string** from SavedVariables/config is fine (strings aren&#x27;t secret; that&#x27;s the same mechanism that lets whisper text through).
+- Call `SetWhoToUi(true)` and `SendWho` only inside the OnClick path. Deferring either through `C_Timer.After` moves it off the hardware event and trips the invariant (the fuzz suite enforces this). No timer-driven send, no auto-advance.
+- **There is no public getter** for the current routing flag, so &quot;restore to the native window&#x27;s state&quot; can only be approximated. The existing `setWhoToUi(false)` (`Core.lua:575-581`) already does the sensible thing: it reconstructs the native frame&#x27;s `IsShown()` and applies that, rather than blindly forcing `false`. Leave it. `false` doesn&#x27;t close an already-open native window anyway.
+- Don&#x27;t try to &quot;cleanse&quot; the table with `securecallfunction`/`CopyTable`/`table.freeze` — that won&#x27;t un-taint it and isn&#x27;t needed once you stop passing it.
+
+---
+
+## Ranked recommended fix
+
+**1. Root fix — never build/pass the `SendWhoFilters` table on this client (Forever `camelot`/1.60.1).** Two prongs, both cheap:
+- Migration in `initDB` (near `Core.lua:152`): if the build is the camelot 1.60.1 family (capture `GetBuildInfo()` once at load, as already logged at `Core.lua:1857`), rewrite a saved/default `whoMode` of `&quot;exclude&quot;` or `&quot;include&quot;` to `&quot;text&quot;` (leave `&quot;text&quot;`/`&quot;local&quot;`). This fixes the already-saved `&quot;exclude&quot;` without asking the user to touch anything.
+- Belt-and-suspenders in `whoFilters()` (`Core.lua:509`): `return nil` on that client so the 3-arg branch can never be reached again. Optionally keep the 3-arg path behind a persisted capability flag for other clients.
+
+The per-class splitting, `c-&quot;Mage&quot;` encoding, and result filtering all already exist — no new query machinery.
+
+**2. Self-heal in `actionRefused`/`NextSearch`** exactly as in Q3: `sendingOurs`-gated `whoRefused` flag, flip `whoMode` to `&quot;text&quot;`, rebuild plural `classes` queue items to one-per-class, `setWhoToUi(false)`, log + one-line note, `return false` before dequeue/pending/timeout. No send from the handler. This is the backstop that keeps future clients or missed configs from silently going dead again.
+
+**3. Keep `SetWhoToUi(true)` through receipt; do not adopt Answer 1&#x27;s `false`.** Copy `GetNumWhoResults`/`GetWhoInfo` immediately in the handler; restore best-effort via the existing `setWhoToUi(false)`. Distinguish three terminal states: blocked (Q3 path), `WHO_LIST_UPDATE` with zero rows (&quot;0 online — nothing found&quot;), and no response within `WHO_TIMEOUT` (&quot;slow to answer / possibly throttled — press Continue&quot;).
+
+**4. If the 2-arg form is ever also blocked synchronously** (the B contingency, not expected): persist a &quot;manual&quot; transport flag and show the exact native `/who` query for the user instead of attempting `SecureActionButton` tricks — there&#x27;s no secure action type for arbitrary WHO, and the hardware event is already present.
+
+**5. Test gap to close:** the mock&#x27;s `SendWho` (`tests/mock.lua:144`) models a block as a Lua `error(&quot;blocked&quot;)` (caught by the `pcall`), *not* as the live event — so the 750k-step suite cannot currently reproduce this regression. Add a mock path that fires `ADDON_ACTION_FORBIDDEN` synchronously from inside `SendWho` when filters `~= nil`, and assert: a blocked who produces zero `sentWho`/queue-advance, flips `whoMode` to `&quot;text&quot;`, does **not** un-welcome a recently-welcomed prospect, and sends nothing off-press; plus 1–3-result searches still deliver via `WHO_LIST_UPDATE`.
+
+---
+
+## Where the council genuinely disagreed
+
+- **`SetWhoToUi` direction**: Answer 1 said `false` (addon-owned), Answer 2 said `true`. The composite and the API routing semantics resolve it to **`true`** — `false` reroutes ≤3-result sets to `CHAT_MSG_SYSTEM` and would make small searches time out. (Critique 2&#x27;s prose misattributed the two positions but its conclusion was right.)
+- **Self-heal correlation**: Answer 1 keyed on `pending`; Answer 2 and the objection keyed on a call-active sentinel. The objection wins — the event is synchronous and `pending` is set after the call. The existing `sendingOurs` flag is the correct sentinel, and it&#x27;s already in the code.
+- **`whoMode` vs a separate `whoTransport`**: Answer 2 argued filter *semantics* (`exclude`/`include`) should not be conflated with *transport* (which overload is callable). That&#x27;s a legitimate architectural point, but for this fix flipping `whoMode` to `&quot;text&quot;` is sufficient — `queryText` already encodes the class and `onWhoResults` still applies the wanted-classes filter, so no user intent is lost. If you want the cleaner long-term shape, split transport out as a persisted capability flag independent of `whoMode`; it&#x27;s not required to fix the regression.
+
+Net: Search/Continue goes out as 2-arg `SendWho(&quot;60-60 c-\&quot;Mage\&quot;&quot;, origin)`, results land via `WHO_LIST_UPDATE` + `GetWhoInfo` with `SetWhoToUi(true)`, and if any future client blocks a search again the addon flips itself to text mode and says so in one line — with no send that didn&#x27;t come from a press.</div></article></section>
+<section class="footnotes"><h2>Footnotes</h2><p>answer order seen by deepseek: 1,2</p><p>answer order seen by gpt-5.5: 2,1</p><p>answer order seen by grok: 1,2</p></section>
+</main></body></html>

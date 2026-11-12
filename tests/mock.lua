@@ -1,6 +1,6 @@
 -- Minimal stand-in for the WoW client API, enough to load and drive Torchcall offline.
 local M = { now = 1000, wall = 1791400000, timers = {}, sentAddon = {}, sentChat = {}, sentWho = {}, sentFilters = {}, invited = {},
-            printed = {}, frames = {}, lockdown = false, inGuild = true, canInvite = true, myGuild = "The True Torchmen",
+            printed = {}, frames = {}, lockdown = false, inGuild = true, canInvite = true, myGuild = "True Torchmen",
             myName = "Vesh Torchman", who = {}, races = { { name = "Orc", ID = 2 }, { name = "Troll", ID = 8 }, { name = "Tauren", ID = 6 }, { name = "Undead", ID = 5 } }, whoTotal = nil, whoToUi = false, addonResult = 0, zone = "Durotar" }
 
 -- secret values: any use other than passing them around blows up

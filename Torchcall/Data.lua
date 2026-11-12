@@ -7,7 +7,7 @@
 
 local _, ns = ...
 
-ns.GUILD_NAME = "The True Torchmen"
+ns.GUILD_NAME = "True Torchmen"
 
 -- ONE opener since 1.7.0. It says who is in the guild (experienced players, casual
 -- players, new players), carries the site and the Discord so the player can look
@@ -62,7 +62,7 @@ ns.OLD_REPLY = "Welcome aboard. Our Discord has class guides, a craft request bo
 -- /torchcall guild info or /torchcall guild motd writes one of them, if your rank can.
 -- Offered only inside the guild named above.
 ns.GUILD_INFO = table.concat({
-  "The True Torchmen. Whoever is ahead lights the way for whoever is behind.",
+  "True Torchmen. Whoever is ahead lights the way for whoever is behind.",
   "Friends first, fun first, real life always wins. Leveling groups, dungeon nights, world PvP as a pack, casual raids from December 9.",
   "Discord: discord.gg/passthetorch",
   "Site: passthetorch.pages.dev",
@@ -73,7 +73,7 @@ ns.GUILD_MOTD = "Welcome, Torchmen. Discord: discord.gg/passthetorch  Site: pass
 -- Answers for someone who wrote back. One press sends one of them, each goes to a player
 -- once, and they can all be rewritten on the Answers tab. "words" are what the addon looks
 -- for in a reply to suggest the right one; it only suggests, you press.
--- These describe The True Torchmen. Another guild using this addon should rewrite every one.
+-- These describe True Torchmen. Another guild using this addon should rewrite every one.
 ns.ANSWERS = {
   { key = "about", label = "What we are", words = { "what is", "what's", "whats", "about", "who are", "tell me", "more info", "info", "kind of guild", "what kind" },
     text = "The name is the idea: whoever is ahead lights the way for whoever is behind. We are friends who level in small groups, run dungeon nights and never leave anyone to play alone unless they want to." },
