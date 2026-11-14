@@ -155,6 +155,11 @@ local function buildInviteBox()
   f.edit:SetPoint("TOPLEFT", 16, -66)
   f.edit:SetAutoFocus(false)
   f.edit:SetMaxLetters(255)
+  local function hide()
+    f.edit:ClearFocus()
+    f:Hide()
+  end
+  f:SetScript("OnHide", function() f.edit:ClearFocus() end)
   f.edit:SetScript("OnTextChanged", function(self, userInput)
     if not userInput or f.restoring then return end
     f.restoring = true
@@ -165,19 +170,20 @@ local function buildInviteBox()
   f.edit:SetScript("OnKeyDown", function(_, key)
     if key == "C" and type(IsControlKeyDown) == "function" and IsControlKeyDown() then
       C_Timer.After(0, function()
-        if f:IsShown() then f:Hide() end
+        if f:IsShown() then hide() end
         ns.Print("Copied. Press Enter, Ctrl+V, Enter to send it.")
       end)
     end
   end)
-  f.edit:SetScript("OnEnterPressed", function() f:Hide() end)
-  f.edit:SetScript("OnEscapePressed", function() f:Hide() end)
+  f.edit:SetScript("OnEnterPressed", hide)
+  f.edit:SetScript("OnEscapePressed", hide)
   f.close = makeButton(f, "Close", 90, 22)
   f.close:SetPoint("BOTTOMRIGHT", -16, 14)
-  f.close:SetScript("OnClick", function() f:Hide() end)
+  f.close:SetScript("OnClick", hide)
   f.cancel = makeButton(f, "Cancel invite", 120, 22)
   f.cancel:SetPoint("RIGHT", f.close, "LEFT", -8, 0)
   f.cancel:SetScript("OnClick", function()
+    f.edit:ClearFocus()
     if f.player then ns.CancelInvite(f.player) end
     f:Hide()
   end)

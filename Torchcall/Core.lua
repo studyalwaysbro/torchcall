@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.9.0"
+ns.VERSION = "1.9.1"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 30        -- Forever can take a while to return a who answer
@@ -186,6 +186,24 @@ local function initDB()
       if (t[key] or 0) <= 0 then underflow = underflow + 1; t[key] = 0
       else t[key] = t[key] - 1 end
     end
+    local function removeContact(at)
+      for i = #db.sent, 1, -1 do
+        if db.sent[i] == at then table.remove(db.sent, i) return end
+      end
+    end
+    local function removeBucketContact(p)
+      if type(p.bk) == "table" then
+        for kind, key in pairs(p.bk) do
+          local all = type(db.buckets) == "table" and db.buckets[kind]
+          local counts = type(all) == "table" and all[key]
+          if type(counts) == "table" then
+            local sent = type(counts.sent) == "number" and counts.sent or 0
+            counts.sent = math.max(0, sent - 1)
+          end
+        end
+      end
+      p.bk = nil
+    end
     for name, p in pairs(db.prospects) do
       if p.status == "invited" and not p.inviteConfirmed and (p.t or 0) >= 1793750400 then
         repaired = repaired + 1
@@ -199,6 +217,8 @@ local function initDB()
         else
           p.status = "new"
           db.contacted[name] = nil
+          removeContact(p.t)
+          removeBucketContact(p)
           backToNew = backToNew + 1
         end
         p.path = nil
@@ -213,6 +233,14 @@ local function initDB()
       inviteRepairNotice = ("Fixed %d invites the game blocked since launch. They got your whisper but never the invite, so they now count as whispered. Invite now opens a /ginvite command to paste.")
         :format(repaired)
     end
+  end
+  -- Before 1.9 there was no confirmation flag. Those saved invited rows were already counted
+  -- at the API call, so a later join must not run them through confirmation a second time.
+  if not db.migrations.legacyInvites191 then
+    for _, p in pairs(db.prospects) do
+      if p.status == "invited" and not p.inviteConfirmed then p.inviteConfirmed = true end
+    end
+    db.migrations.legacyInvites191 = true
   end
   if o.rotate == nil then o.rotate = true end -- try every opener, then lean on the one that gets answers
   if o.minimap == nil then o.minimap = true end
@@ -1517,12 +1545,12 @@ local function actionRefused(addon, what)
     switchInviteToCopy(invitingProspect, true)
     return
   end
+  if chattingOurs then chatRefused = true return end
   local lastPending = lastApiProspect and invitePending(lastApiProspect)
   if lastPending and lastPending.mode == "api" and GetTime() - lastApiInviteAt <= 3 then
     switchInviteToCopy(lastApiProspect, false)
     return
   end
-  if chattingOurs then chatRefused = true return end
   -- a search or an invite being stopped says nothing about the welcome before it
   if label:find("Who", 1, true) or label:find("Invite", 1, true) then return end
   local said = lastWelcomed
@@ -1634,7 +1662,7 @@ function ns.Invite(name)
     first = false
   end
   p.invitePending = { at = time(), mode = blocked and "copy" or "api" }
-  if first then
+  if first and not blocked then
     countContact()
     p.inviteContactCounted = true
   end

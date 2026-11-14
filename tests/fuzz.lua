@@ -118,6 +118,13 @@ M.guard = function(kind, target, msg)
     if time() - rec.lastWhisper < o.gap then fail("whispers closer than the gap") end
     rec.lastWhisper = time()
     local topic = msg:match("^ANS:(%a+)")
+    -- The randomized UI presses can restore one shipped answer after login replaces the
+    -- configured answers with markers. Recognize that real line as an answer too.
+    if not topic then
+      for _, answer in ipairs(ns.ANSWERS) do
+        if answer.text == msg then topic = answer.key break end
+      end
+    end
     if topic then
       if not rec.replied[target] then fail("answer to someone who never wrote back: " .. target) end
       if not (rec.opened[target] or rec.invited[target]) then fail("answer to someone never contacted: " .. target) end
@@ -323,14 +330,14 @@ local STEP = {
   end,
   function() -- the game reports on an invite
     local pending = {}
-    for candidate, p in pairs(db.prospects) do if p.invitePending then pending[#pending + 1] = candidate end end
+    for candidate, p in pairs(db.prospects) do if ns.InvitePending(p) then pending[#pending + 1] = candidate end end
     local name = (#pending > 0 and chance(0.5)) and pick(pending) or (chance(0.6) and knownName("invited") or knownName())
     local line = pick({ "You have invited %s to join your guild.", "%s has joined the guild.", "%s has joined the guild.", "%s declines your guild invitation.", "%s is already in a guild.",
                         "No player named '%s' is currently playing.", "%s is ignoring you.", "%s has gone offline.", "%s" })
     local hidden = chance(0.03)
     local p = db.prospects[name]
     local confirms = line == "You have invited %s to join your guild."
-      or (line == "%s has joined the guild." and p and (p.invitePending or p.status == "whispered" or p.status == "invited"))
+      or (line == "%s has joined the guild." and p and (ns.InvitePending(p) or p.status == "whispered" or p.status == "invited"))
     if confirms and not hidden and p and not rec.invited[name] then
       if p.status == "new" and not rec.opened[name] then rec.contacts[#rec.contacts + 1] = time() end
       rec.invited[name] = true

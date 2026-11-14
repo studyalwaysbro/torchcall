@@ -129,6 +129,7 @@ C_ChatInfo = {
     -- this client refuses chat that does not come from a press: an event, no error, nothing sent
     if M.pressOnly and M.inTimer then M.fire("ADDON_ACTION_FORBIDDEN", "Torchcall", "SendChatMessage()") return end
     if M.chatError then error("blocked") end
+    if M.chatForbidden then M.fire("ADDON_ACTION_FORBIDDEN", "Torchcall", "SendChatMessage()") return end
     assert(type(msg) == "string" and #msg <= 255, "chat message too long or not text")
     if M.guard then M.guard(channel, target or msg, msg) end
     M.sentChat[#M.sentChat + 1] = { msg, channel, target }
@@ -197,7 +198,8 @@ local function noop() end
 local REGION = { SetPoint = noop, ClearAllPoints = noop, SetAllPoints = noop, SetSize = noop, SetWidth = noop, SetHeight = noop,
   GetWidth = function() return 140 end, GetCenter = function() return 0, 0 end, GetEffectiveScale = function() return 1 end,
   Show = function(f) local was = f.__shown f.__shown = true if not was and f.__scripts.OnShow then f.__scripts.OnShow(f) end end,
-  Hide = function(f) f.__shown = false end, IsShown = function(f) return f.__shown end,
+  Hide = function(f) local was = f.__shown f.__shown = false if was and f.__scripts.OnHide then f.__scripts.OnHide(f) end end,
+  IsShown = function(f) return f.__shown end,
   GetName = function(f) return f.__name end, GetParent = function(f) return f.__parent end }
 local FRAME = { RegisterEvent = function(f, e) f.__events[e] = true end, UnregisterEvent = function(f, e) f.__events[e] = nil end,
   SetScript = function(f, name, fn) assert(fn == nil or type(fn) == "function", "SetScript needs a function") f.__scripts[name] = fn end,
@@ -281,7 +283,7 @@ function M.reset(wipe)
   M.sentFilters = {}
   M.lockdown, M.inGuild, M.canInvite, M.addonResult = false, true, true, 0
   M.group, M.raid, M.roster, M.rosterHidden = {}, false, {}, nil
-  M.chatError, M.whoError, M.inviteError, M.inviteForbidden, M.inviteForbiddenSecret = nil, nil, nil, nil, nil
+  M.chatError, M.chatForbidden, M.whoError, M.inviteError, M.inviteForbidden, M.inviteForbiddenSecret = nil, nil, nil, nil, nil, nil
   M.autoConfirmInvite, M.controlDown = true, false
   M.who, M.whoTotal, M.whoToUi = {}, nil, false
   M.whoBlockFilters = nil

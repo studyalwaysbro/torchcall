@@ -1781,14 +1781,17 @@ do
   M.reset(true)
   TorchcallDB = {
     prospects = {
-      ["Blocked Cold"] = { name = "Blocked Cold", status = "invited", t = 1793900000, path = "cold", seen = 1793900000 },
+      ["Blocked Cold"] = { name = "Blocked Cold", status = "invited", t = 1793900000, path = "cold", seen = 1793900000,
+                           bk = { level = "20-29", class = "MAGE", hour = "12" } },
       ["Blocked Warm"] = { name = "Blocked Warm", status = "invited", t = 1793900001, path = "warm", tpl = "pitch", seen = 1793900001 },
       ["Confirmed One"] = { name = "Confirmed One", status = "invited", t = 1793900002, path = "cold", inviteConfirmed = true },
       ["Beta Invite"] = { name = "Beta Invite", status = "invited", t = 1793750399, path = "warm" },
       ["Joined One"] = { name = "Joined One", status = "joined", t = 1793900003, path = "cold" },
     },
     contacted = { ["Blocked Cold"] = 1, ["Blocked Warm"] = 2 },
-    stats = { invited = 1, cold = { invited = 0 }, warm = { invited = 1 } }, log = {}, opts = {}, sent = {},
+    stats = { invited = 1, cold = { invited = 0 }, warm = { invited = 1 } }, log = {}, opts = {},
+    sent = { 1793800000, 1793900000, 1793900000, 1793900001 },
+    buckets = { level = { ["20-29"] = { sent = 1 } }, class = { MAGE = { sent = 0 } }, hour = { ["12"] = { sent = 2 } } },
   }
   M.pitch = nil
   ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
@@ -1800,16 +1803,30 @@ do
   check(db.contacted["Blocked Warm"] ~= nil, "repair keeps contact memory for a real pitch")
   check(db.prospects["Blocked Cold"].inviteRepaired and db.prospects["Blocked Warm"].inviteRepaired, "repaired rows are audited")
   eq(db.prospects["Blocked Cold"].path, nil, "repair clears the false cold path")
+  local matchingContacts = 0
+  for _, at in ipairs(db.sent) do if at == 1793900000 then matchingContacts = matchingContacts + 1 end end
+  eq(matchingContacts, 1, "repair removes exactly one matching contact-clock entry")
+  eq(#db.sent, 3, "repair leaves unrelated contact-clock entries alone")
+  eq(db.buckets.level["20-29"].sent, 0, "repair decrements the saved level bucket")
+  eq(db.buckets.class.MAGE.sent, 0, "repair clamps a saved bucket at zero")
+  eq(db.buckets.hour["12"].sent, 1, "repair decrements the saved hour bucket")
+  eq(db.prospects["Blocked Cold"].bk, nil, "repair clears the false bucket attribution")
   eq(db.stats.invited, 0, "repair decrements the confirmed total and clamps it")
   eq(db.stats.cold.invited, 0, "repair clamps a cold-path underflow")
   eq(db.stats.warm.invited, 0, "repair decrements the warm path")
   check(db.prospects["Confirmed One"].inviteConfirmed and db.prospects["Confirmed One"].status == "invited", "confirmed invites are untouched")
-  eq(db.prospects["Beta Invite"].status, "invited", "pre-launch beta invites are untouched")
+  check(db.prospects["Beta Invite"].status == "invited" and db.prospects["Beta Invite"].inviteConfirmed,
+    "pre-launch beta invites are kept and marked as already counted")
   eq(db.prospects["Joined One"].status, "joined", "joined rows are untouched by the repair")
   check(db.migrations.invites190, "repair migration is marked complete")
+  check(db.migrations.legacyInvites191, "legacy invite confirmation migration is marked complete")
   check(db.log[#db.log]:find("repaired 2 invites the game had blocked (cold 1, warm 1, back to new 1, underflow 2)", 1, true), "repair audit has every count")
   M.fire("PLAYER_LOGIN")
   check(table.concat(M.printed, "\n"):find("Fixed 2 invites the game blocked since launch", 1, true), "repair is explained once at login")
+  local legacyInvites = db.stats.invited
+  M.fire("CHAT_MSG_SYSTEM", "Beta Invite has joined the guild.")
+  eq(db.stats.invited, legacyInvites, "a legacy invite joining does not count the invite twice")
+  eq(db.prospects["Beta Invite"].status, "joined", "the legacy invite still completes its join")
   local repairedStats = db.stats.invited
   load190(false, 18, nil)
   eq(db.stats.invited, repairedStats, "repair does not run twice")
@@ -1843,12 +1860,14 @@ do
   eq(TorchcallInviteFrame.edit:GetText(), "/ginvite Copy Carl", "user edits to the command are reverted")
   TorchcallInviteFrame.edit:GetScript("OnEscapePressed")(TorchcallInviteFrame.edit)
   check(not TorchcallInviteFrame:IsShown() and carl.invitePending ~= nil, "Escape hides the box but keeps the pending invite")
+  check(not TorchcallInviteFrame.edit:HasFocus(), "Escape returns keyboard focus to the game")
   local slots0, sends0 = #db.inviteTimes, #M.sentChat + #M.invited
   check(ns.Invite("Copy Carl"), "pressing Invite again reopens the command")
   eq(#db.inviteTimes, slots0, "reopening does not consume an invite slot")
   eq(#M.sentChat + #M.invited, sends0, "reopening sends nothing")
   check(M.click("Close"), "the copy box has a Close button")
   check(not TorchcallInviteFrame:IsShown() and carl.invitePending ~= nil, "Close hides the box and keeps pending")
+  check(not TorchcallInviteFrame.edit:HasFocus(), "Close returns keyboard focus to the game")
   check(ns.Invite("Copy Carl"), "the command reopens after Close")
   M.controlDown = true
   TorchcallInviteFrame.edit:GetScript("OnKeyDown")(TorchcallInviteFrame.edit, "C")
@@ -1856,6 +1875,7 @@ do
   M.advance(0)
   M.controlDown = false
   check(not TorchcallInviteFrame:IsShown(), "the copy box hides on the next frame after Ctrl+C")
+  check(not TorchcallInviteFrame.edit:HasFocus(), "the hidden copy box has no focus after Ctrl+C")
   check(table.concat(M.printed, "\n"):find("Copied. Press Enter, Ctrl+V, Enter to send it.", 1, true), "copy instructions are printed")
   check(carl.invitePending ~= nil, "copying keeps the pending record")
 
@@ -1870,6 +1890,7 @@ do
   check(M.click("Cancel invite"), "the copy box has a Cancel invite button")
   eq(db.prospects["Legacy Lara"].invitePending, nil, "the copy-box Cancel clears pending")
   eq(db.prospects["Legacy Lara"].status, "new", "copy-box Cancel leaves status unchanged")
+  check(not TorchcallInviteFrame.edit:HasFocus(), "copy-box Cancel returns keyboard focus to the game")
   C_GuildInfo.Invite = modernInvite
   db.prospects["Paste Pat"] = { name = "Paste Pat", status = "new", seen = time(), level = 21 }
   db.prospects["Next Nora"] = { name = "Next Nora", status = "new", seen = time() + 1, level = 22 }
@@ -1880,6 +1901,7 @@ do
   eq(db.contacted["Paste Pat"], nil, "a prepared command alone is not a contact")
   check(ns.NextTarget().name ~= "Paste Pat", "Next skips a pending new row")
   TorchcallInviteFrame.edit:GetScript("OnEnterPressed")(TorchcallInviteFrame.edit)
+  check(not TorchcallInviteFrame.edit:HasFocus(), "Enter returns keyboard focus to the game")
   SlashCmdList["TORCHCALL"]("")
   local marker = false
   for _, frame in ipairs(M.frames) do
@@ -1897,6 +1919,31 @@ do
   db.prospects["Login Lee"] = { name = "Login Lee", status = "new", seen = time(), invitePending = { at = time() - 700, mode = "copy" } }
   load190(false, 18, nil)
   eq(db.prospects["Login Lee"].invitePending, nil, "login pruning clears an expired pending invite")
+
+  -- Copy-mode preparation, cancellation and expiry do not spend the contact caps. Confirmation does.
+  load190(true, 18, false)
+  db.opts.hourly, db.opts.daily = 1, 1
+  db.prospects["Cancel Cora"] = { name = "Cancel Cora", status = "new", seen = time() }
+  check(ns.Invite("Cancel Cora"), "prepare a cold copy invite for cancellation")
+  eq(#db.sent, 0, "preparing a copy invite does not use the contact quota")
+  check(ns.CancelInvite("Cancel Cora"), "cancel the cold copy invite")
+  eq(#db.sent, 0, "cancelling a copy invite does not use the contact quota")
+  M.advance(3)
+  db.prospects["Expire Erin"] = { name = "Expire Erin", status = "new", seen = time() }
+  check(ns.Invite("Expire Erin"), "prepare a cold copy invite for expiry")
+  eq(#db.sent, 0, "a copy invite waiting for paste does not use the contact quota")
+  M.advance(600)
+  eq(ns.InvitePending(db.prospects["Expire Erin"]), nil, "the cold copy invite expires")
+  eq(#db.sent, 0, "an expired copy invite does not use the contact quota")
+  db.prospects["Confirm Cami"] = { name = "Confirm Cami", status = "new", seen = time() }
+  check(ns.Invite("Confirm Cami"), "prepare a cold copy invite for confirmation")
+  eq(#db.sent, 0, "confirmation is still required before the copy contact counts")
+  M.fire("CHAT_MSG_SYSTEM", "You have invited Confirm Cami to join your guild.")
+  eq(#db.sent, 1, "confirming the copy invite uses one contact-quota slot")
+  M.advance(3)
+  db.prospects["Capped Casey"] = { name = "Capped Casey", status = "new", seen = time() }
+  local capped, cappedWhy = ns.Invite("Capped Casey")
+  check(not capped and cappedWhy:find("this hour", 1, true), "the confirmed copy invite now enforces the contact cap")
 
   -- The rolling ten-per-minute limiter is checked before a pitch whisper.
   load190(true, 18, nil)
@@ -1918,7 +1965,9 @@ do
   -- Only a game confirmation changes status and funnel counts, and it is idempotent.
   load190(true, 18, false)
   db.prospects["Confirm Connie"] = { name = "Confirm Connie", status = "new", seen = time() }
+  local copyContacts = #db.sent
   check(ns.Invite("Confirm Connie"), "prepare an invite for confirmation")
+  eq(#db.sent, copyContacts, "copy preparation leaves the contact clock unchanged")
   local connie = db.prospects["Confirm Connie"]
   local stats0 = db.stats.invited
   M.fire("CHAT_MSG_SYSTEM", "You have invited |Hplayer:Confirm Connie|h[Confirm Connie]|h to join your guild.")
@@ -1928,6 +1977,7 @@ do
   eq(db.stats.invited, stats0 + 1, "confirmation increments the invite total")
   eq(db.stats.cold.invited, 1, "confirmation increments the matching path")
   check(db.contacted["Confirm Connie"] ~= nil, "confirmation writes permanent contact memory")
+  eq(#db.sent, copyContacts + 1, "copy confirmation adds one contact-clock entry")
   M.fire("CHAT_MSG_SYSTEM", "You have invited Confirm Connie to join your guild.")
   eq(db.stats.invited, stats0 + 1, "a repeated confirmation is idempotent")
 
@@ -1971,11 +2021,18 @@ do
                   stats = { invited = 1, cold = { invited = 1 }, warm = { invited = 0 } }, opts = {}, sent = {}, contacted = {}, log = {} }
   ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
   M.fire("ADDON_LOADED", "Torchcall")
-  check(not TorchcallDB.migrations.invites190 and TorchcallDB.prospects["Other Client"].status == "invited", "the repair never runs outside project 18")
+  check(not TorchcallDB.migrations.invites190 and TorchcallDB.prospects["Other Client"].status == "invited", "the 1.9.0 repair never runs outside project 18")
+  check(TorchcallDB.migrations.legacyInvites191 and TorchcallDB.prospects["Other Client"].inviteConfirmed,
+    "the 1.9.1 legacy marker runs on other clients")
+  eq(TorchcallDB.stats.invited, 1, "the legacy marker changes no invite counters")
+  M.fire("CHAT_MSG_SYSTEM", "Other Client has joined the guild.")
+  eq(TorchcallDB.stats.invited, 1, "an other-client legacy join does not count the invite twice")
   load190(true, nil, false)
   M.autoConfirmInvite = false
   db.prospects["API Alice"] = { name = "API Alice", status = "new", seen = time() }
+  local apiContacts = #db.sent
   check(ns.Invite("API Alice"), "the non-Forever API path attempts an invite")
+  eq(#db.sent, apiContacts + 1, "the API call immediately uses one contact-quota slot")
   eq(M.invited[#M.invited], "API Alice", "the API path calls the right player")
   eq(db.prospects["API Alice"].status, "new", "a successful pcall does not confirm an invite")
   eq(db.prospects["API Alice"].invitePending.mode, "api", "the API attempt waits in its own pending mode")
@@ -1998,6 +2055,22 @@ do
   local callsAfterBlock = #M.invited
   check(ns.Invite("Flag Fran"), "the saved refusal flag uses copy mode on later presses")
   eq(#M.invited, callsAfterBlock, "the saved refusal flag prevents another API call")
+
+  -- A synchronous chat refusal belongs to that chat call, even just after an API invite.
+  load190(true, nil, false)
+  M.autoConfirmInvite = false
+  db.prospects["Earlier Eli"] = { name = "Earlier Eli", status = "new", seen = time() }
+  db.prospects["Refused Ruth"] = { name = "Refused Ruth", status = "new", seen = time() }
+  check(ns.Invite("Earlier Eli"), "prepare the earlier API invite")
+  local refusedChat = #M.sentChat
+  M.chatForbidden = true
+  local chatted, chatWhy = ns.Whisper("Refused Ruth")
+  M.chatForbidden = nil
+  check(not chatted and chatWhy:find("key press or a click", 1, true), "the synchronous whisper refusal is reported as chat")
+  eq(#M.sentChat, refusedChat, "the refused whisper reaches nobody")
+  eq(db.prospects["Refused Ruth"].status, "new", "the refused whisper does not mark its player contacted")
+  check(db.prospects["Earlier Eli"].invitePending.mode == "api" and not db.inviteApiBlocked,
+    "the refused whisper is never re-attributed to the earlier API invite")
 
   load190(true, nil, false)
   M.autoConfirmInvite = false
