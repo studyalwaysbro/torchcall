@@ -658,8 +658,10 @@ repeat
   M.answerWho(page, 999)
   M.advance(6)
 until not ns.NextSearch() or rounds > 600
--- 1 root + 4 slices + 8 singles, then classes and races under each single level
-eq(rounds, 13 + 8 * #ns.CLASSES + 8 * #ns.CLASSES * #M.races, "every level, class and race is visited exactly once, then it stops")
+-- 1 root + 4 slices + 8 singles, then classes and compatible race splits under
+-- each single level. Paladin and Druid have only one Horde race, so they do not split.
+local hordeRaceSplits = 4 + 3 + 3 + 2 + 3 + 3 + 3 -- Warrior, Hunter, Rogue, Priest, Shaman, Mage, Warlock
+eq(rounds, 13 + 8 * #ns.CLASSES + 8 * hordeRaceSplits, "every level, class and legal race split is visited exactly once, then it stops")
 eq(ns.QueueSize(), 0, "nothing left queued")
 ns.SetLevels(1, 60)
 
@@ -2132,6 +2134,109 @@ do
   WOW_PROJECT_ID = nil
   M.pitch = false
 end
+
+-- 1.9.2 hotfix: impossible race searches and bounded who retries -----------
+local function freshWhoHotfix(races, mode)
+  M.whoMode = mode or "text"
+  M.reset(true)
+  M.races = races
+  local hotfixNs = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+  M.fire("ADDON_LOADED", "Torchcall") M.fire("PLAYER_LOGIN")
+  M.advance(10)
+  return hotfixNs, TorchcallDB
+end
+
+local hordeRaces = {
+  { name = "Orc", ID = 2 }, { name = "Undead", ID = 5 },
+  { name = "Tauren", ID = 6 }, { name = "Troll", ID = 8 },
+}
+
+-- F1: a capped single-class answer only fans out to legal race/class pairs.
+ns, db = freshWhoHotfix(hordeRaces)
+ns.ToggleClass("PRIEST")
+local priestWho = #M.sentWho
+check(ns.StartSearch(41, 41), "F1 Horde Priest search sends")
+M.answerWho(crowd(50, "PRIEST", "Some Guild", "PriestCap"), 200)
+eq(ns.QueueSize(), 2, "F1 Horde Priest queues exactly two legal races")
+M.advance(6) check(ns.NextSearch(), "F1 Horde Priest first race sends")
+eq(M.sentWho[#M.sentWho], '41-41 c-"Priest" r-"Undead"', "F1 Horde Priest queues Undead")
+M.answerWho({}, 0)
+M.advance(6) check(ns.NextSearch(), "F1 Horde Priest second race sends")
+eq(M.sentWho[#M.sentWho], '41-41 c-"Priest" r-"Troll"', "F1 Horde Priest queues Troll")
+M.answerWho({}, 0)
+eq(#M.sentWho - priestWho, 3, "F1 Horde Priest never queues Orc or Tauren")
+
+local hordeRacesWithUnknownId = {
+  { name = "Orc", ID = 2 }, { name = "Undead", ID = 5 },
+  { name = "Tauren", ID = 6 }, { name = "Troll", ID = 8 },
+  { name = "Unreadable ID" },
+}
+ns, db = freshWhoHotfix(hordeRacesWithUnknownId, "exclude")
+ns.ToggleClass("PRIEST")
+check(ns.StartSearch(41, 41), "F1 single structured class search sends")
+M.answerWho(crowd(50, "PRIEST", "Some Guild", "StructuredPriestCap"), 200)
+eq(ns.QueueSize(), 2, "F1 single q.classes uses IDs and skips a race with no usable ID")
+
+ns, db = freshWhoHotfix(hordeRaces)
+ns.ToggleClass("PALADIN")
+check(ns.StartSearch(41, 41), "F1 Horde Paladin search sends")
+M.answerWho(crowd(50, "PALADIN", "Some Guild", "PaladinCap"), 200)
+eq(ns.QueueSize(), 0, "F1 one legal Horde Paladin race does not repeat the search")
+
+local allianceRaces = {
+  { name = "Human", ID = 1 }, { name = "Dwarf", ID = 3 },
+  { name = "Night Elf", ID = 4 }, { name = "Gnome", ID = 7 },
+  { name = "High Order Skyborne", ID = 95 },
+}
+ns, db = freshWhoHotfix(allianceRaces)
+ns.ToggleClass("DRUID")
+local druidWho = #M.sentWho
+check(ns.StartSearch(41, 41), "F1 Alliance Druid search sends")
+M.answerWho(crowd(50, "DRUID", "Some Guild", "DruidCap"), 200)
+eq(ns.QueueSize(), 2, "F1 Alliance Druid queues exactly two legal races")
+M.advance(6) check(ns.NextSearch(), "F1 Alliance Druid first race sends")
+eq(M.sentWho[#M.sentWho], '41-41 c-"Druid" r-"Night Elf"', "F1 Alliance Druid queues Night Elf")
+M.answerWho({}, 0)
+M.advance(6) check(ns.NextSearch(), "F1 Alliance Druid second race sends")
+eq(M.sentWho[#M.sentWho], '41-41 c-"Druid" r-"High Order Skyborne"', "F1 Alliance Druid queues High Order Skyborne")
+M.answerWho({}, 0)
+eq(#M.sentWho - druidWho, 3, "F1 Alliance Druid skips every incompatible listed race")
+
+-- F2: the first timeout retries once; the second drops that query and advances.
+ns, db = freshWhoHotfix(hordeRaces)
+check(ns.StartSearch(40, 47), "F2 timeout plan sends")
+M.answerWho(crowd(50, "WARRIOR", "Some Guild", "TimeoutCap"), 200)
+eq(ns.QueueSize(), 4, "F2 timeout plan starts with four slices")
+M.advance(6) check(ns.NextSearch(), "F2 timed query first send")
+M.advance(31)
+eq(ns.QueueSize(), 4, "F2 first timeout requeues the query once")
+M.advance(6) check(ns.NextSearch(), "F2 timed query one retry")
+M.advance(31)
+eq(ns.QueueSize(), 3, "F2 second timeout drops the query")
+eq(ns.searchNote, "No answer for levels 40 to 41 after two tries, so it was skipped. Press Continue for the next batch (3 left).",
+  "F2 second-timeout note says skipped and gives the remaining count")
+check(db.log[#db.log]:find("who 40-41 timeout, skipped", 1, true), "F2 second timeout log says skipped")
+M.advance(6) check(ns.NextSearch(), "F2 queue moves to the next query")
+eq(M.sentWho[#M.sentWho], "42-43", "F2 retry exhaustion advances instead of looping")
+M.answerWho({}, 0)
+
+-- The exact live loop is finite: two legal Priest races, two attempts apiece.
+ns, db = freshWhoHotfix(hordeRaces)
+ns.ToggleClass("PRIEST")
+local liveWho = #M.sentWho
+check(ns.StartSearch(41, 41), "F1/F2 live-loop Priest search sends")
+M.answerWho(crowd(50, "PRIEST", "Some Guild", "LiveCap"), 200)
+local livePresses = 0
+while ns.QueueSize() > 0 and livePresses < 12 do
+  M.advance(6)
+  if ns.NextSearch() then
+    livePresses = livePresses + 1
+    M.advance(31)
+  end
+end
+eq(ns.QueueSize(), 0, "F1/F2 live-loop queue empties")
+check(not ns.SearchPending(), "F1/F2 live-loop leaves no search pending")
+eq(#M.sentWho - liveWho, 5, "F1/F2 live-loop sends one capped search and four bounded race attempts")
 
 -- the version the addon reports is the version on the box
 do

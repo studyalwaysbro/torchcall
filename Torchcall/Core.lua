@@ -14,7 +14,7 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.9.1"
+ns.VERSION = "1.9.2"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
 local WHO_TIMEOUT = 30        -- Forever can take a while to return a who answer
@@ -670,14 +670,40 @@ local function queryText(q)
 end
 ns.QueryText = queryText
 
--- The races this character can search for, as the who window names them.
-local function raceNames()
+-- Race/class pairs from CharBaseInfo, Forever build 1.60.1.70938. The who filter's
+-- numeric race ID is stable across languages; its name is only used in the query text.
+local CLASS_RACE_IDS = {
+  DRUID   = { [4] = true, [6] = true, [95] = true, [96] = true },
+  HUNTER  = { [1] = true, [2] = true, [3] = true, [4] = true, [6] = true, [8] = true, [95] = true, [96] = true },
+  MAGE    = { [1] = true, [2] = true, [5] = true, [7] = true, [8] = true, [95] = true },
+  PALADIN = { [1] = true, [3] = true, [5] = true },
+  PRIEST  = { [1] = true, [3] = true, [4] = true, [5] = true, [7] = true, [8] = true },
+  ROGUE   = { [1] = true, [2] = true, [3] = true, [4] = true, [5] = true, [7] = true, [8] = true, [95] = true, [96] = true },
+  SHAMAN  = { [2] = true, [3] = true, [6] = true, [8] = true, [96] = true },
+  WARLOCK = { [1] = true, [2] = true, [5] = true, [7] = true, [8] = true },
+  WARRIOR = { [1] = true, [2] = true, [3] = true, [4] = true, [5] = true, [6] = true, [7] = true, [8] = true, [95] = true, [96] = true },
+}
+
+local function searchedClass(q)
+  if q.class then return q.class end
+  if q.classes and #q.classes == 1 then return q.classes[1] end
+end
+
+-- The compatible races this character can search for, as the who window names them.
+local function raceNames(q)
   local names = {}
+  local seen = {}
+  local allowed = CLASS_RACE_IDS[searchedClass(q)]
   local filters = C_FriendList and C_FriendList.GetWhoRaceFilters and plain(try(C_FriendList.GetWhoRaceFilters))
   if type(filters) == "table" then
     for _, f in ipairs(filters) do
       local name = type(f) == "table" and plain(f.name)
-      if type(name) == "string" and name ~= "" and not name:find('"', 1, true) then names[#names + 1] = name end
+      local id = type(f) == "table" and plain(f.ID)
+      if type(name) == "string" and name ~= "" and not name:find('"', 1, true)
+          and not seen[name] and (not allowed or allowed[id] == true) then
+        seen[name] = true
+        names[#names + 1] = name
+      end
     end
   end
   return names
@@ -807,9 +833,15 @@ function ns.NextSearch()
     if pending ~= q or sends ~= mine then return end
     pending = nil
     setWhoToUi(false)
-    table.insert(queue, 1, q)
-    logLine("who " .. queryText(q) .. " timeout")
-    note("The game was slow to answer that one. Press Continue to try it again.")
+    q.timeouts = (q.timeouts or 0) + 1
+    if q.timeouts < 2 then
+      table.insert(queue, 1, q)
+      logLine("who " .. queryText(q) .. " timeout")
+      note("The game was slow to answer that one. Press Continue to try it again.")
+    else
+      logLine("who " .. queryText(q) .. " timeout, skipped")
+      note(("No answer for %s after two tries, so it was skipped. Press Continue for the next batch (%d left)."):format(describe(q), #queue))
+    end
   end)
   return true
 end
@@ -942,7 +974,7 @@ local function onWhoResults()
   end
   if capped then
     local picked = q.classes or pickedClasses()
-    local races = (not raceFilterBroken and not q.race) and raceNames() or {}
+    local races = (not raceFilterBroken and not q.race) and raceNames(q) or {}
     local function push(extra)
       local item = { lo = q.lo, hi = q.hi, class = q.class, classes = q.classes, race = q.race, zone = q.zone }
       for k, v in pairs(extra) do item[k] = v or nil end

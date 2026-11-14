@@ -37,7 +37,7 @@ local JUNK = { "", " ", "x", "|", ";;;", "C;1", "L;1;abcdef;", "C;2;abcdef;Bob S
 local NONLATIN = { ["\208\152\208\178\208\176\208\189"] = true, ["\236\157\180\236\136\156"] = true,
                    ["\208\159\208\181\209\130\209\128\208\190\208\178"] = true }
 local theirs = 0
-local world = {} -- [name] = what the game last said about that player in an answer to one of our searches
+local world = {} -- [name] = the last readable answer from one of our searches
 local ns, db
 local totals = { steps = 0, whispers = 0, followups = 0, invites = 0, welcomes = 0, searches = 0, relogs = 0, wipes = 0, blocked = 0,
                  answers = 0, checkins = 0, groupOpeners = 0 }
@@ -236,8 +236,11 @@ local function answer()
   M.who, M.whoTotal = list, total
   if ns.SearchPending() then
     for _, info in ipairs(list) do
-      local name = info.fullName
-      if not issecretvalue(name) then
+      local name, guild = info.fullName, info.fullGuildName
+      -- Core cannot classify a row whose name or guild is hidden, so the oracle must
+      -- not replace its last trusted level/class with fields from that unreadable row.
+      if not issecretvalue(name) and type(name) == "string" and name ~= ""
+          and not issecretvalue(guild) and type(guild) == "string" then
         local old = world[name] or {}
         local level, class = info.level, info.filename
         -- a field the game hides this time leaves what an earlier answer said
