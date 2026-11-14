@@ -2,16 +2,16 @@
 
 Guild recruiting for **The True Torchmen** on World of Warcraft: Forever.
 
-It finds players with no guild, opens with one short question, helps you answer what they ask about the guild, and tracks who joined and who stayed. You press a button for every search, every whisper and every invite. It never contacts anyone by itself.
+It finds players with no guild, opens with one short question, helps you answer what they ask about the guild, and tracks who joined and who stayed. You press a button for every search, every whisper and every invite command you prepare. It never contacts anyone by itself.
 
 ## What it does
 
-- **Search by level and class.** Set a level range and pick any mix of the nine classes. Press Search and it asks the game who is online and keeps the players with no guild. The class is carried in the search itself, so the players that come back are the classes you asked for, one short search per class. Optionally limit it to your current zone.
+- **Search by level and class.** Set a level range and pick any mix of the nine classes. Press Search and it asks the game who is online and keeps the players with no guild. The result note separates people newly added from guildless people already on your list, so "0 new" never sounds like nobody was available. The class is carried in the search itself, so the players that come back are the classes you asked for, one short search per class. Optionally limit it to your current zone.
 - **It always shows you something.** One who search returns 50 players at most. When more are online, you get the first 50 at once and the rest is lined up as batches (by level, then class, then race): the button turns into **Continue (N left)** and counts down the few seconds the game makes you wait, so one more press gets the next batch. A search also brings the Prospects tab it is filling to the front, and that tab shows a live count, so the players you find are never hidden behind another tab.
 - **Filters that mean it.** The level range, the classes and the optional Latin-alphabet name filter are applied to every result by the addon itself, not just sent to the server. Change them any time and the list follows. The Next button only ever reaches players who pass them.
-- **Prospect list.** Name, level, class, zone. Whisper, Invite or Skip on every row. Press a column title to sort by it.
-- **An invite introduces itself.** Invite someone you have not spoken to and they first get your opener as a whisper, then the invite, so the box that pops up on their screen has a reason attached. Still one press, one player, and it counts as one contact. `/torchcall pitch off` goes back to the invite alone.
-- **Next button, or a key.** Works down the list, one player per press. Each press is one whisper or one invite, whichever you set it to. Bind it under Options, Keybindings, AddOns.
+- **Prospect list.** Name, level, class, zone. Whisper, Invite or Skip on every row. Press a column title to sort by it. A prepared invite stays in its normal row, says **invite ready**, and can be cancelled without changing the row's status.
+- **An invite introduces itself.** On Forever, Invite first sends the opener when that option is on, then opens a box containing `/ginvite First Last`. Press Ctrl+C, then Enter, Ctrl+V, Enter to paste it into chat yourself. Closing the box keeps the command ready; press Invite to reopen it or Cancel to clear it. Torchcall marks and counts the invite only when the game confirms it. `/torchcall pitch off` prepares the command without an opener.
+- **Next button, or a key.** Works down the list, one player per press. Each press sends one whisper or prepares one invite command, whichever you set it to. A row with an invite already ready is skipped. Bind the action under Options, Keybindings, AddOns.
 - **Nobody is asked twice. Ever.** Every name you contact is remembered for good, not for a week. Recruiters in the same guild share who they contacted, so two officers never pitch the same player.
 - **Openers that find their own winner.** Four opening whispers ship. Each says who is in the guild (experienced players, casual players, new players), carries the site and the Discord, and ends on a question. With rotation on, every one gets about twenty sends, then the one that gets the most answers is used most, with one send in five still going to the least tried. The Message tab shows sent, answered and joined for each wording.
 - **Answers, one press each.** When someone writes back they move to the top, and Reply opens a panel with what they said and a button per topic: what the guild is, how it started, time and real life, raids, PvP, leveling, new players, a dungeon run first, and the Discord and site line. The addon reads their reply and highlights the answer that fits, or tells you it sounds like a yes or a no. Each answer goes to a player once, five at most, and only to someone who wrote to you first. All of them are editable on the Answers tab.
@@ -23,7 +23,7 @@ It finds players with no guild, opens with one short question, helps you answer 
 - **Nobody left hanging.** At login it tells you who answered and is still waiting on you. `/torchcall warm` lists them, longest wait first.
 - **A horn when they join.** Your recruit accepts: a horn, and their name across your screen.
 - **The first week.** For each recruit: in the Discord, said hello in guild chat, grouped with you. The last two are noticed by the addon, the first you tick with `/torchcall step <name> discord`. `/torchcall recruits` shows all three, and the check-in whisper carries the Discord link for anyone who has not joined it.
-- **Who stayed.** When the guild roster loads, recruits who joined at least a week ago are marked as still here or gone. The Answers tab shows invites after a conversation next to invites with no conversation: how many were accepted and how many were still in the guild a week later.
+- **Who stayed.** When the guild roster loads, recruits who joined at least a week ago are marked as still here or gone. The Answers tab shows confirmed invites after a conversation next to confirmed invites with no conversation: how many joined and how many were still in the guild a week later.
 - **Guild window texts.** `/torchcall guild` shows the guild Info text and message of the day next to a version with the Discord and the site in it, and writes one on command if your rank can. It never writes them by itself.
 - **Results.** Joins and declines are read from the game's own messages and counted.
 - **Limits.** 60 new people an hour, 100 a day and 4 seconds between whispers by default. `/torchcall cap` changes the hourly number, up to 120. `/torchcall cap day 300` changes the daily one and `/torchcall cap day off` removes it. These are the addon's own brakes, not the game's: the game may still act on an account that gets reported for spam.
@@ -32,7 +32,7 @@ It finds players with no guild, opens with one short question, helps you answer 
 
 ## What it will not do
 
-There is no "invite all", no "send to everyone", no hands-free mode that turns your normal clicks into invites, and no timer. Those are the features that get recruiters reported. One press reaches one player (an invite to someone new is that player's opener and their invite, nothing more). The hourly limit and the gap between whispers cannot be switched off; the daily limit is yours to set. That includes the guild-chat welcome: the game itself refuses chat an addon sends without a press.
+There is no "invite all", no "send to everyone", no hands-free mode that turns your normal clicks into invites, and no timer that works through the list. Those are the features that get recruiters reported. One press handles one player: it sends one whisper or prepares one invite command, and an optional opener is the only message attached to that preparation. The hourly limit, the invite limit of ten per rolling minute and the gap between whispers cannot be switched off; the daily limit is yours to set. Nothing searches, whispers or prepares another invite without a press. The existing guild welcome behavior is separate and can be turned off with `/torchcall autowelcome off`.
 
 ## Install
 
@@ -53,7 +53,7 @@ On Linux with [Yeeterson Forge](https://github.com/studyalwaysbro/yeeterson-forg
 | `/torchcall search` | Send the next queued search |
 | `/torchcall class mage priest` | Only these classes (`class all` to clear) |
 | `/torchcall level 20-40` | Only this level range |
-| `/torchcall next` | Whisper or invite the next player |
+| `/torchcall next` | Whisper or prepare an invite for the next player |
 | `/torchcall group` | Add everyone in your party or raid who has no guild |
 | `/torchcall answer raids <name>` | One answer to someone who wrote back |
 | `/torchcall checkin <name>` | Check in on a recruit who joined a few days ago |
@@ -63,7 +63,7 @@ On Linux with [Yeeterson Forge](https://github.com/studyalwaysbro/yeeterson-forg
 | `/torchcall skip <name>` | Never contact this player |
 | `/torchcall cap <number>` | New people per hour |
 | `/torchcall cap day <number or off>` | New people per day, or no daily limit |
-| `/torchcall pitch` | Whisper the opener before an invite to someone new, on or off |
+| `/torchcall pitch` | Whisper the opener before preparing an invite for someone new, on or off |
 | `/torchcall need <classes>` | Classes the guild is short of: `healers`, `tanks`, class names, `off` |
 | `/torchcall warm` | Who answered and is still waiting on you |
 | `/torchcall board` | Recruiters this week |
@@ -73,7 +73,7 @@ On Linux with [Yeeterson Forge](https://github.com/studyalwaysbro/yeeterson-forg
 
 ## Is this allowed?
 
-Torchcall reads what the game gives every addon and sends ordinary whispers and guild invites, the same ones you could type. It does not automate them: there is no timer, no loop and no way to make it work through a list by itself. Blizzard publishes no approved list for Forever addons and can disable any addon at any time. How many strangers you whisper is still on you. Be the recruiter you would want to hear from.
+Torchcall reads what the game gives every addon and sends ordinary whispers from your presses. Guild invites on Forever are commands you copy from Torchcall and paste into chat yourself. There is no timer, no loop and no way to make it work through a list by itself. Blizzard publishes no approved list for Forever addons and can disable any addon at any time. How many strangers you whisper is still on you. Be the recruiter you would want to hear from.
 
 ## Using it for another guild
 
@@ -84,10 +84,10 @@ The openers use `{guild}`, so they work anywhere. The answers describe The True 
 With Lua 5.1, from this folder:
 
 - `lua tests/run.lua` runs the scenario suite.
-- `lua tests/fuzz.lua 2500 300` plays 2,500 random recruiting sessions (750,000 random presses, replies, joins, lockdowns, reloads and two-month absences) and checks after every step that no promise above was broken: nothing sent outside a press, nobody contacted twice, every limit held, Next never reaching anyone outside the filters. Records are kept outside the addon, so it cannot mark its own homework. The soak itself was checked by planting 25 different bugs in the addon, one at a time; it caught all 25. For 1.2 another 13 were planted in the new code and it caught 12; the thirteenth, the cap of five answers per player, is covered by the scenario suite.
+- `lua tests/fuzz.lua 2500 300` plays 2,500 random recruiting sessions (750,000 random presses, replies, joins, lockdowns, reloads and two-month absences) and checks after every step that no promise above was broken: nothing sent outside a press, nobody contacted twice, every limit held, Next never reaching anyone outside the filters, and neither guild-invite API ever called on project 18. Records are kept outside the addon, so it cannot mark its own homework. The soak itself was checked by planting 25 different bugs in the addon, one at a time; it caught all 25. For 1.2 another 13 were planted in the new code and it caught 12; the thirteenth, the cap of five answers per player, is covered by the scenario suite.
 
 ## Status
 
-Built against Blizzard's Forever interface source, build 1.60.1. Searches, whispers, invites and join tracking have been used in the Forever beta. The live Forever client refuses the who search's class-filter table from an addon, so since 1.7.4 the class is asked for in the search words instead, one short search per class; if a client ever blocks it another way, the addon notices the refusal and switches to words on its own. Everything new in 1.2 (answers, rotation, Add my group, check-ins, who stayed, guild window texts) passes the offline suite. If something breaks, `/torchcall log` shows what the addon saw.
+Built against Blizzard's Forever interface source, build 1.60.1. Forever live has blocked guild invites made by addon code since launch. Torchcall therefore never calls either guild-invite API on Forever and instead gives you a copy box for the game's own `/ginvite` command. The live client also refuses the who search's class-filter table from an addon, so the class is asked for in the search words instead, one short search per class; if another client blocks either API, Torchcall remembers the refusal and switches to the safe path. The scenario suite and randomized soak cover the copy flow, confirmation, migration, honest search counts and the no-background-action invariants. If something breaks, `/torchcall log` shows what the addon saw.
 
 Made by **The True Torchmen**. MIT license.

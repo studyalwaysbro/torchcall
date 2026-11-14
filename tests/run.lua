@@ -122,7 +122,7 @@ eq(ns.QueueSize(), 4, "slices queued for the timeout check")
 M.advance(6)
 local before = ns.QueueSize()
 ns.NextSearch()
-M.advance(7)
+M.advance(31)
 eq(ns.QueueSize(), before, "unanswered search requeued")
 check(not ns.SearchPending(), "no search left hanging")
 eq(M.whoToUi, false, "who routing restored after a timeout")
@@ -1015,7 +1015,7 @@ check(M.click("PvP"), "the PvP answer button is there")
 check(#M.sentChat == 1 and M.sentChat[1][3] == "Eve Five" and M.sentChat[1][1]:find("PvP ruleset", 1, true), "and sends that answer to that player")
 M.advance(10)
 check(not M.click("PvP"), "a sent answer cannot be pressed again")
-check(M.click("Send the guild invite"), "invite from the conversation panel")
+check(M.click("Prepare the guild invite"), "invite from the conversation panel")
 eq(M.invited[#M.invited], "Eve Five", "invites that player") eq(db.prospects["Eve Five"].path, "warm", "as a warm invite")
 check(M.click("Close") and not M.click("What we are"), "the panel closes")
 M.advance(10)
@@ -1152,7 +1152,7 @@ M.advance(6) ns.NextSearch() M.answerWho({}, 0)
 -- a single level with more than fifty: one class at a time, by the filter
 M.advance(6)
 ns.StartSearch(30, 30) M.answerWho(crowd(50, "MAGE", "Some Guild", "Guilded"), 200)
-check(ns.searchNote:find("0 new without a guild", 1, true) and ns.searchNote:find("next batch", 1, true), "fifty people in guilds is still not an error: " .. ns.searchNote)
+check(ns.searchNote:find("0 have no guild: 0 new, 0 already on your list", 1, true) and ns.searchNote:find("next batch", 1, true), "fifty people in guilds is still not an error: " .. ns.searchNote)
 M.advance(6) ns.NextSearch()
 eq(M.sentWho[#M.sentWho], "30-30", "one level") eq(ids(M.sentFilters[#M.sentWho]), "1,2,3,4,7,8,9,11", "one class: everything but Priest filtered out")
 M.answerWho({}, 0)
@@ -1371,7 +1371,7 @@ ns.StartSearch(1, 60)
 M.advance(1) C_FriendList.SendWho("someone else's search")
 check(not ns.SearchPending(), "a foreign search puts ours back")
 M.advance(4.5) check(ns.NextSearch(), "sent again")
-M.advance(1)
+M.advance(25)
 check(ns.SearchPending(), "and still waiting when the first send's timer runs out")
 M.answerWho({ P("Late Larry", nil, 12, "ROGUE") }, 1)
 check(db.prospects["Late Larry"], "its answer is accepted")
@@ -1760,6 +1760,304 @@ do
   eq(kept.status, "skipped", "a whisper after a skip changes nothing")
   for _, r in ipairs(ns.List("new")) do check(r.name ~= keptName, "and does not re-pin the row") end
   eq(ns.errors, nil, "no errors in the answered-lifecycle section")
+end
+
+-- 20. 1.9.0: Forever invite commands, confirmation, repair and honest who notes --
+do
+  local function load190(wipe, project, pitch)
+    WOW_PROJECT_ID = project
+    M.reset(wipe)
+    M.pitch = pitch
+    ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+    M.fire("ADDON_LOADED", "Torchcall")
+    M.fire("PLAYER_LOGIN")
+    db = TorchcallDB
+    return ns, db
+  end
+
+  -- The one-time repair runs only on Forever, before login pruning, and reports its audit.
+  M.wall = 1794000000
+  WOW_PROJECT_ID = 18
+  M.reset(true)
+  TorchcallDB = {
+    prospects = {
+      ["Blocked Cold"] = { name = "Blocked Cold", status = "invited", t = 1793900000, path = "cold", seen = 1793900000 },
+      ["Blocked Warm"] = { name = "Blocked Warm", status = "invited", t = 1793900001, path = "warm", tpl = "pitch", seen = 1793900001 },
+      ["Confirmed One"] = { name = "Confirmed One", status = "invited", t = 1793900002, path = "cold", inviteConfirmed = true },
+      ["Beta Invite"] = { name = "Beta Invite", status = "invited", t = 1793750399, path = "warm" },
+      ["Joined One"] = { name = "Joined One", status = "joined", t = 1793900003, path = "cold" },
+    },
+    contacted = { ["Blocked Cold"] = 1, ["Blocked Warm"] = 2 },
+    stats = { invited = 1, cold = { invited = 0 }, warm = { invited = 1 } }, log = {}, opts = {}, sent = {},
+  }
+  M.pitch = nil
+  ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+  M.fire("ADDON_LOADED", "Torchcall")
+  db = TorchcallDB
+  eq(db.prospects["Blocked Cold"].status, "new", "repair returns a blocked cold invite with no pitch to new")
+  eq(db.prospects["Blocked Warm"].status, "whispered", "repair keeps a real pitch as whispered")
+  eq(db.contacted["Blocked Cold"], nil, "repair removes contact memory when nothing reached the player")
+  check(db.contacted["Blocked Warm"] ~= nil, "repair keeps contact memory for a real pitch")
+  check(db.prospects["Blocked Cold"].inviteRepaired and db.prospects["Blocked Warm"].inviteRepaired, "repaired rows are audited")
+  eq(db.prospects["Blocked Cold"].path, nil, "repair clears the false cold path")
+  eq(db.stats.invited, 0, "repair decrements the confirmed total and clamps it")
+  eq(db.stats.cold.invited, 0, "repair clamps a cold-path underflow")
+  eq(db.stats.warm.invited, 0, "repair decrements the warm path")
+  check(db.prospects["Confirmed One"].inviteConfirmed and db.prospects["Confirmed One"].status == "invited", "confirmed invites are untouched")
+  eq(db.prospects["Beta Invite"].status, "invited", "pre-launch beta invites are untouched")
+  eq(db.prospects["Joined One"].status, "joined", "joined rows are untouched by the repair")
+  check(db.migrations.invites190, "repair migration is marked complete")
+  check(db.log[#db.log]:find("repaired 2 invites the game had blocked (cold 1, warm 1, back to new 1, underflow 2)", 1, true), "repair audit has every count")
+  M.fire("PLAYER_LOGIN")
+  check(table.concat(M.printed, "\n"):find("Fixed 2 invites the game blocked since launch", 1, true), "repair is explained once at login")
+  local repairedStats = db.stats.invited
+  load190(false, 18, nil)
+  eq(db.stats.invited, repairedStats, "repair does not run twice")
+  check(not table.concat(M.printed, "\n"):find("Fixed ", 1, true), "no repair line on a later login")
+
+  -- A Forever player with nothing to repair hears nothing about it.
+  load190(true, 18, nil)
+  check(db.migrations.invites190, "fresh data is marked repaired too")
+  check(not table.concat(M.printed, "\n"):find("Fixed ", 1, true), "no repair line when nothing was repaired")
+
+  -- Forever never calls either invite API. It prepares one immutable command and keeps status.
+  load190(true, 18, nil)
+  db.prospects["Copy Carl"] = { name = "Copy Carl", status = "new", seen = time(), level = 20 }
+  M.advance(10)
+  local chat0, invite0, confirmed0 = #M.sentChat, #M.invited, db.stats.invited
+  check(ns.Invite("Copy Carl"), "Forever prepares a cold invite")
+  local carl = db.prospects["Copy Carl"]
+  eq(#M.sentChat, chat0 + 1, "the configured opener goes first")
+  eq(#M.invited, invite0, "Forever never calls C_GuildInfo.Invite")
+  eq(carl.status, "whispered", "preparing does not mark the row invited")
+  eq(carl.invitePending.mode, "copy", "the pending record names the copy flow")
+  eq(db.stats.invited, confirmed0, "preparing does not count a confirmed invite")
+  check(TorchcallInviteFrame and TorchcallInviteFrame:IsShown(), "the copy box opens")
+  eq(TorchcallInviteFrame.title:GetText(), "Guild invite: Copy Carl", "copy box title names the player")
+  eq(TorchcallInviteFrame.edit:GetText(), "/ginvite Copy Carl", "copy box holds the exact slash command")
+  eq(TorchcallInviteFrame.instruction:GetText(), "Ctrl+C, then Enter, Ctrl+V, Enter", "copy box shows the full paste instructions")
+  check(type(TorchcallInviteFrame:GetScript("OnDragStart")) == "function" and type(TorchcallInviteFrame:GetScript("OnDragStop")) == "function", "copy box is movable")
+  check(TorchcallInviteFrame.edit:HasFocus() and TorchcallInviteFrame.edit.__highlighted, "copy command is focused and highlighted")
+  TorchcallInviteFrame.edit:SetText("changed")
+  TorchcallInviteFrame.edit:GetScript("OnTextChanged")(TorchcallInviteFrame.edit, true)
+  eq(TorchcallInviteFrame.edit:GetText(), "/ginvite Copy Carl", "user edits to the command are reverted")
+  TorchcallInviteFrame.edit:GetScript("OnEscapePressed")(TorchcallInviteFrame.edit)
+  check(not TorchcallInviteFrame:IsShown() and carl.invitePending ~= nil, "Escape hides the box but keeps the pending invite")
+  local slots0, sends0 = #db.inviteTimes, #M.sentChat + #M.invited
+  check(ns.Invite("Copy Carl"), "pressing Invite again reopens the command")
+  eq(#db.inviteTimes, slots0, "reopening does not consume an invite slot")
+  eq(#M.sentChat + #M.invited, sends0, "reopening sends nothing")
+  check(M.click("Close"), "the copy box has a Close button")
+  check(not TorchcallInviteFrame:IsShown() and carl.invitePending ~= nil, "Close hides the box and keeps pending")
+  check(ns.Invite("Copy Carl"), "the command reopens after Close")
+  M.controlDown = true
+  TorchcallInviteFrame.edit:GetScript("OnKeyDown")(TorchcallInviteFrame.edit, "C")
+  check(TorchcallInviteFrame:IsShown(), "Ctrl+C leaves the command visible until copying finishes")
+  M.advance(0)
+  M.controlDown = false
+  check(not TorchcallInviteFrame:IsShown(), "the copy box hides on the next frame after Ctrl+C")
+  check(table.concat(M.printed, "\n"):find("Copied. Press Enter, Ctrl+V, Enter to send it.", 1, true), "copy instructions are printed")
+  check(carl.invitePending ~= nil, "copying keeps the pending record")
+
+  db.opts.pitch = false
+  local modernInvite = C_GuildInfo.Invite
+  C_GuildInfo.Invite = nil
+  db.prospects["Legacy Lara"] = { name = "Legacy Lara", status = "new", seen = time(), level = 20 }
+  M.advance(3)
+  local legacyCalls = #M.invited
+  check(ns.Invite("Legacy Lara"), "Forever copy flow also works when only GuildInvite exists")
+  eq(#M.invited, legacyCalls, "Forever never calls the legacy GuildInvite API")
+  check(M.click("Cancel invite"), "the copy box has a Cancel invite button")
+  eq(db.prospects["Legacy Lara"].invitePending, nil, "the copy-box Cancel clears pending")
+  eq(db.prospects["Legacy Lara"].status, "new", "copy-box Cancel leaves status unchanged")
+  C_GuildInfo.Invite = modernInvite
+  db.prospects["Paste Pat"] = { name = "Paste Pat", status = "new", seen = time(), level = 21 }
+  db.prospects["Next Nora"] = { name = "Next Nora", status = "new", seen = time() + 1, level = 22 }
+  M.advance(3)
+  check(ns.Invite("Paste Pat"), "an invite can be prepared with the pitch off")
+  local pat = db.prospects["Paste Pat"]
+  eq(pat.status, "new", "a copy-only pending invite remains new")
+  eq(db.contacted["Paste Pat"], nil, "a prepared command alone is not a contact")
+  check(ns.NextTarget().name ~= "Paste Pat", "Next skips a pending new row")
+  TorchcallInviteFrame.edit:GetScript("OnEnterPressed")(TorchcallInviteFrame.edit)
+  SlashCmdList["TORCHCALL"]("")
+  local marker = false
+  for _, frame in ipairs(M.frames) do
+    if frame.__kind == "FontString" and type(frame.__text) == "string" and frame.__text:find("invite ready", 1, true) then marker = true end
+  end
+  check(marker, "a pending row visibly says invite ready")
+  check(M.click("Cancel"), "the pending row has a Cancel control")
+  eq(pat.invitePending, nil, "Cancel clears only the pending record")
+  eq(pat.status, "new", "Cancel does not rewrite status")
+
+  db.prospects["Expire Ed"] = { name = "Expire Ed", status = "new", seen = time(), invitePending = { at = time(), mode = "copy" } }
+  M.advance(600)
+  eq(ns.InvitePending(db.prospects["Expire Ed"]), nil, "pending invites expire lazily after ten minutes")
+  eq(db.prospects["Expire Ed"].status, "new", "pending expiry never rewrites status")
+  db.prospects["Login Lee"] = { name = "Login Lee", status = "new", seen = time(), invitePending = { at = time() - 700, mode = "copy" } }
+  load190(false, 18, nil)
+  eq(db.prospects["Login Lee"].invitePending, nil, "login pruning clears an expired pending invite")
+
+  -- The rolling ten-per-minute limiter is checked before a pitch whisper.
+  load190(true, 18, nil)
+  db.opts.pitch, db.opts.gap = true, 1
+  for i = 1, 11 do db.prospects["Limit " .. i] = { name = "Limit " .. i, status = "new", seen = time(), level = 20 } end
+  for i = 1, 10 do
+    check(ns.Invite("Limit " .. i), "rolling limiter allows invite preparation " .. i)
+    M.advance(2.1)
+  end
+  eq(#db.inviteTimes, 10, "only the last ten invite attempt times are persisted")
+  local beforeDenied = #M.sentChat
+  local limited, limitedWhy = ns.Invite("Limit 11")
+  check(not limited and limitedWhy:find("allows 10 guild invites a minute", 1, true), "the eleventh invite inside a minute is refused")
+  eq(#M.sentChat, beforeDenied, "the rolling limiter runs before the pitch whisper")
+  eq(db.prospects["Limit 11"].invitePending, nil, "a limited invite is not prepared")
+  M.advance(42)
+  check(ns.Invite("Limit 11"), "the next invite is available when the oldest slot rolls off")
+
+  -- Only a game confirmation changes status and funnel counts, and it is idempotent.
+  load190(true, 18, false)
+  db.prospects["Confirm Connie"] = { name = "Confirm Connie", status = "new", seen = time() }
+  check(ns.Invite("Confirm Connie"), "prepare an invite for confirmation")
+  local connie = db.prospects["Confirm Connie"]
+  local stats0 = db.stats.invited
+  M.fire("CHAT_MSG_SYSTEM", "You have invited |Hplayer:Confirm Connie|h[Confirm Connie]|h to join your guild.")
+  eq(connie.status, "invited", "the system invite line confirms status through a player link")
+  check(connie.inviteConfirmed and connie.invitedAt and connie.invitePending == nil, "confirmation is recorded and pending is cleared")
+  eq(connie.path, "cold", "a confirmation without a reply is cold")
+  eq(db.stats.invited, stats0 + 1, "confirmation increments the invite total")
+  eq(db.stats.cold.invited, 1, "confirmation increments the matching path")
+  check(db.contacted["Confirm Connie"] ~= nil, "confirmation writes permanent contact memory")
+  M.fire("CHAT_MSG_SYSTEM", "You have invited Confirm Connie to join your guild.")
+  eq(db.stats.invited, stats0 + 1, "a repeated confirmation is idempotent")
+
+  db.prospects["Warm Wendy"] = { name = "Warm Wendy", status = "whispered", seen = time(), t = time(), replied = time(), invitePending = { at = time(), mode = "copy" } }
+  M.fire("CHAT_MSG_SYSTEM", "You have invited Warm Wendy to join your guild.")
+  eq(db.prospects["Warm Wendy"].path, "warm", "a replied player's confirmation is warm")
+  db.prospects["Join Jules"] = { name = "Join Jules", status = "new", seen = time(), invitePending = { at = time(), mode = "copy" } }
+  local invitesBeforeJoin, joinsBefore = db.stats.invited, db.stats.joined
+  M.fire("CHAT_MSG_SYSTEM", "Join Jules has joined the guild.")
+  check(db.prospects["Join Jules"].inviteConfirmed and db.prospects["Join Jules"].status == "joined", "a join confirms a pending invite before join handling")
+  eq(db.stats.invited, invitesBeforeJoin + 1, "join-first confirmation counts the invite once")
+  eq(db.stats.joined, joinsBefore + 1, "join-first handling still counts the join")
+  db.prospects["Whisper Will"] = { name = "Whisper Will", status = "whispered", seen = time(), t = time() }
+  M.fire("CHAT_MSG_SYSTEM", "Whisper Will has joined the guild.")
+  check(db.prospects["Whisper Will"].inviteConfirmed, "a join confirms a whispered contact from us")
+  db.prospects["Other Owen"] = { name = "Other Owen", status = "new", seen = time() }
+  M.fire("CHAT_MSG_SYSTEM", "Other Owen has joined the guild.")
+  check(db.prospects["Other Owen"].by and not db.prospects["Other Owen"].inviteConfirmed, "an unrelated new join is not claimed as ours")
+
+  db.prospects["Wait Wes"] = { name = "Wait Wes", status = "whispered", t = time(), invitePending = { at = time(), mode = "copy" } }
+  M.fire("CHAT_MSG_SYSTEM", "Wait Wes has already been invited to a guild.")
+  eq(db.prospects["Wait Wes"].status, "whispered", "someone else's pending guild invite keeps our status")
+  eq(db.prospects["Wait Wes"].invitePending, nil, "someone else's pending guild invite clears ours")
+  check(table.concat(M.printed, "\n"):find("Wait Wes already has a guild invite waiting from someone else.", 1, true), "the already-invited note explains what happened")
+  db.prospects["Auto Amy"] = { name = "Auto Amy", status = "whispered", t = time(), invitePending = { at = time(), mode = "copy" } }
+  M.fire("CHAT_MSG_SYSTEM", "Auto Amy is declining all guild invitations.")
+  eq(db.prospects["Auto Amy"].invitePending, nil, "automatic decline clears pending")
+  db.prospects["Decline Del"] = { name = "Decline Del", status = "whispered", t = time(), invitePending = { at = time(), mode = "copy" } }
+  M.fire("CHAT_MSG_SYSTEM", "Decline Del declines your guild invitation.")
+  eq(db.prospects["Decline Del"].invitePending, nil, "ordinary decline clears pending")
+  db.prospects["Gone Gail"] = { name = "Gone Gail", status = "whispered", t = time(), invitePending = { at = time(), mode = "copy" } }
+  M.fire("CHAT_MSG_SYSTEM", "No player named 'Gone Gail' is currently playing.")
+  eq(db.prospects["Gone Gail"].invitePending, nil, "player-not-found clears pending")
+  M.fire("CHAT_MSG_SYSTEM", M.secret())
+  eq(ns.errors, nil, "secret system text is ignored")
+
+  -- Non-Forever clients keep the API, but wait for confirmation and self-heal on refusal.
+  WOW_PROJECT_ID = nil
+  M.reset(true)
+  TorchcallDB = { prospects = { ["Other Client"] = { name = "Other Client", status = "invited", t = 1793900000, path = "cold" } },
+                  stats = { invited = 1, cold = { invited = 1 }, warm = { invited = 0 } }, opts = {}, sent = {}, contacted = {}, log = {} }
+  ns = M.load("Torchcall", { "Data.lua", "Core.lua", "Comm.lua", "UI.lua" })
+  M.fire("ADDON_LOADED", "Torchcall")
+  check(not TorchcallDB.migrations.invites190 and TorchcallDB.prospects["Other Client"].status == "invited", "the repair never runs outside project 18")
+  load190(true, nil, false)
+  M.autoConfirmInvite = false
+  db.prospects["API Alice"] = { name = "API Alice", status = "new", seen = time() }
+  check(ns.Invite("API Alice"), "the non-Forever API path attempts an invite")
+  eq(M.invited[#M.invited], "API Alice", "the API path calls the right player")
+  eq(db.prospects["API Alice"].status, "new", "a successful pcall does not confirm an invite")
+  eq(db.prospects["API Alice"].invitePending.mode, "api", "the API attempt waits in its own pending mode")
+  eq(db.stats.invited, 0, "an unconfirmed API attempt is not counted")
+  M.fire("CHAT_MSG_SYSTEM", "You have invited API Alice to join your guild.")
+  eq(db.prospects["API Alice"].status, "invited", "the later system line confirms the API invite")
+
+  db.prospects["Sync Sam"] = { name = "Sync Sam", status = "new", seen = time() }
+  M.advance(3)
+  M.inviteForbidden, M.inviteForbiddenSecret = true, true
+  local apiCalls = #M.invited
+  check(ns.Invite("Sync Sam"), "a synchronous API refusal falls back to the copy command")
+  eq(#M.invited, apiCalls, "a refused API call does not masquerade as a sent invite")
+  check(db.inviteApiBlocked and db.prospects["Sync Sam"].invitePending.mode == "copy", "a synchronous refusal persists the copy fallback")
+  check(TorchcallInviteFrame and TorchcallInviteFrame:IsShown(), "a synchronous refusal shows the copy box during the press")
+  eq(ns.errors, nil, "a secret refusal payload is never stringified")
+  M.inviteForbidden, M.inviteForbiddenSecret = nil, nil
+  db.prospects["Flag Fran"] = { name = "Flag Fran", status = "new", seen = time() }
+  M.advance(3)
+  local callsAfterBlock = #M.invited
+  check(ns.Invite("Flag Fran"), "the saved refusal flag uses copy mode on later presses")
+  eq(#M.invited, callsAfterBlock, "the saved refusal flag prevents another API call")
+
+  load190(true, nil, false)
+  M.autoConfirmInvite = false
+  db.prospects["Delay Dana"] = { name = "Delay Dana", status = "new", seen = time() }
+  check(ns.Invite("Delay Dana"), "prepare an API invite for delayed refusal")
+  local delayedChat, delayedInvites = #M.sentChat, #M.invited
+  M.advance(2)
+  M.fire("ADDON_ACTION_FORBIDDEN", "Torchcall", M.secret())
+  check(db.inviteApiBlocked and db.prospects["Delay Dana"].invitePending.mode == "copy", "a refusal within three seconds switches the row to copy mode")
+  eq(#M.sentChat, delayedChat, "the delayed refusal handler sends no chat")
+  eq(#M.invited, delayedInvites, "the delayed refusal handler sends no second invite")
+  check(not TorchcallInviteFrame, "a delayed refusal does not open the copy box by itself")
+  check(table.concat(M.printed, "\n"):find("The game blocked addon invites. Press Invite again to get the command to paste.", 1, true), "a delayed refusal asks for another press")
+  check(ns.Invite("Delay Dana"), "the next press opens the delayed fallback command")
+  check(TorchcallInviteFrame and TorchcallInviteFrame:IsShown(), "the delayed fallback opens only on that press")
+
+  -- WHO results count all guildless names while adding only genuinely new ones.
+  load190(true, 18, false)
+  db.prospects["Known List"] = { name = "Known List", status = "new", seen = time(), level = 10 }
+  db.contacted["Known Old"] = time() - 100
+  eq(ns.AddFromWho(P("Known Old", "Some Guild")), "guilded", "guild membership is classified before old contact memory")
+  eq(ns.AddFromWho({ fullName = M.secret(), fullGuildName = "" }), "unreadable", "a secret who name is unreadable")
+  eq(ns.AddFromWho(P(M.myName)), "self", "our own who row is classified as self")
+  M.advance(10)
+  check(ns.StartSearch(10, 20), "honest-note search sends")
+  M.answerWho({ P("Fresh Finn"), P("Known List"), P("Known Old"), P("Guild Gina", "Some Guild"), P(M.myName) }, 5)
+  check(ns.searchNote:find("5 online, 3 with no guild: 1 new, 2 already on your list.", 1, true), "uncapped note separates new and known guildless players: " .. ns.searchNote)
+  check(db.prospects["Fresh Finn"] and not db.prospects["Known Old"], "only the genuinely new guildless player is added")
+  eq(db.stats.found, 1, "found still counts new prospects only")
+  check(db.log[#db.log]:find("who 10-20 shown=5 total=5 noguild=3 new=1 known=2", 1, true), "each answer logs the exact query and classifications")
+  M.advance(6)
+  check(ns.StartSearch(10, 20), "known-only search sends")
+  M.answerWho({ P("Known List"), P("Known Old") }, 2)
+  check(ns.searchNote:find("2 with no guild: 0 new, 2 already on your list.", 1, true), "known-only note stays numerically honest")
+  check(ns.searchNote:find("Everyone without a guild here has already heard from you: try other levels or classes.", 1, true), "known-only note gives a useful next step")
+
+  local fifty = {}
+  for i = 1, 50 do fifty[i] = P(i <= 9 and ("Seen " .. i) or ("Guild " .. i), i <= 9 and "" or "A Guild") end
+  for i = 1, 9 do db.contacted["Seen " .. i] = time() end
+  M.advance(6)
+  check(ns.StartSearch(30, 30), "capped-note search sends")
+  M.answerWho(fifty, 50)
+  check(ns.searchNote:find("at least 50 online. Of the 50 shown, 9 have no guild: 0 new, 9 already on your list.", 1, true), "capped note does not claim 50 of 50")
+  M.advance(6)
+  check(ns.StartSearch(31, 31), "real-total capped search sends")
+  M.answerWho(fifty, 137)
+  check(ns.searchNote:find("showing 50 of 137 online. Of those, 9 have no guild: 0 new, 9 already on your list.", 1, true), "capped note shows a real larger total")
+
+  M.advance(6)
+  local whoBeforeTimeout = #M.sentWho
+  check(ns.StartSearch(40, 41), "slow search sends")
+  check(ns.searchNote:find("can take up to 30 seconds", 1, true), "searching note states the full wait")
+  M.advance(29)
+  check(ns.SearchPending(), "a slow who answer is still accepted before thirty seconds")
+  M.advance(1)
+  check(not ns.SearchPending() and #M.sentWho == whoBeforeTimeout + 1, "timeout requeues without an automatic retry")
+  check(db.log[#db.log]:find("who 40-41 timeout", 1, true), "a timed-out search gets its own ring-log line")
+
+  WOW_PROJECT_ID = nil
+  M.pitch = false
 end
 
 -- the version the addon reports is the version on the box

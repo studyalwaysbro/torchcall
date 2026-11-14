@@ -14,6 +14,7 @@
 --     a check-in only to a recruit who joined at least two days ago, once; the line for
 --     people you played with only to someone who really was in your group
 --   * reading the guild roster or adding your group never sends anything to anyone
+--   * neither guild-invite API is ever called on Forever (project 18)
 --   * no handler ever raises an error, and the saved data stays plain and bounded
 package.path = "tests/?.lua;" .. package.path
 local M = require("mock")
@@ -134,7 +135,9 @@ M.guard = function(kind, target, msg)
       if rec.checked[target] then fail("check-in sent twice to " .. target) end
       rec.checked[target] = time()
       totals.checkins = totals.checkins + 1
-    elseif msg:find("^FOLLOWUP") then
+    -- "Restore the original messages" puts the shipped follow-up back, which has no FOLLOWUP marker;
+    -- its opening words carry no {tokens}, so they are the same however it is rendered
+    elseif msg:find("^FOLLOWUP") or (type(ns.REPLY) == "string" and msg:sub(1, 30) == ns.REPLY:sub(1, 30)) then
       if not rec.replied[target] then fail("follow-up to someone who never answered: " .. target .. " :: " .. msg) end
       if rec.linked[target] then fail("follow-up sent twice to " .. target) end
       rec.linked[target] = true
@@ -150,6 +153,7 @@ M.guard = function(kind, target, msg)
       totals.whispers = totals.whispers + 1
     end
   elseif kind == "INVITE" then
+    if WOW_PROJECT_ID == 18 then fail("guild invite API called on project 18") end
     if not M.inGuild or not M.canInvite then fail("invite without a guild or the rank") end
     if rec.invited[target] then fail("guild invite sent twice to " .. target) end
     if not rec.opened[target] then firstContact() end
@@ -201,6 +205,7 @@ end
 
 local function login(wipe)
   M.reset(wipe)
+  WOW_PROJECT_ID = chance(0.55) and 18 or nil
   if wipe then freshRecords(); world = {}; totals.wipes = totals.wipes + 1 end
   M.whoMode = pick({ "text", "text", "exclude", "include", "local", false }) or nil -- every way a search can ask for classes
   ns = M.load(os.getenv("TORCHCALL_DIR") or "Torchcall", FILES)
@@ -317,10 +322,19 @@ local STEP = {
     M.fire("CHAT_MSG_WHISPER", "hi", secret and M.secret() or name)
   end,
   function() -- the game reports on an invite
-    local name = chance(0.6) and knownName("invited") or knownName()
-    local line = pick({ "%s has joined the guild.", "%s has joined the guild.", "%s declines your guild invitation.", "%s is already in a guild.",
+    local pending = {}
+    for candidate, p in pairs(db.prospects) do if p.invitePending then pending[#pending + 1] = candidate end end
+    local name = (#pending > 0 and chance(0.5)) and pick(pending) or (chance(0.6) and knownName("invited") or knownName())
+    local line = pick({ "You have invited %s to join your guild.", "%s has joined the guild.", "%s has joined the guild.", "%s declines your guild invitation.", "%s is already in a guild.",
                         "No player named '%s' is currently playing.", "%s is ignoring you.", "%s has gone offline.", "%s" })
     local hidden = chance(0.03)
+    local p = db.prospects[name]
+    local confirms = line == "You have invited %s to join your guild."
+      or (line == "%s has joined the guild." and p and (p.invitePending or p.status == "whispered" or p.status == "invited"))
+    if confirms and not hidden and p and not rec.invited[name] then
+      if p.status == "new" and not rec.opened[name] then rec.contacts[#rec.contacts + 1] = time() end
+      rec.invited[name] = true
+    end
     if line == "%s has joined the guild." and db.prospects[name] then
       rec.joined[name] = true
       if not hidden then rec.joinedAt[name] = time() end
@@ -373,11 +387,11 @@ local STEP = {
   function() M.races = chance(0.1) and {} or { { name = "Orc", ID = 2 }, { name = "Troll", ID = 8 }, { name = "Tauren", ID = 6 }, { name = "Undead", ID = 5 } } end,
   function() press(SlashCmdList["TORCHCALL"], pick(SLASH) .. (chance(0.3) and (" " .. knownName()) or "")) end,
   function() press(SlashCmdList["TORCHCALL"], pick(JUNK)) end,
-  function() press(M.click, pick({ "Search", "Next search", "Whisper next", "Invite next", "Whisper", "Invite", "Skip", "Link", "Welcome",
+  function() press(M.click, pick({ "Search", "Next search", "Whisper next", "Invite next", "Whisper", "Invite", "Skip", "Cancel", "Link", "Welcome",
                                    "Prospects", "Contacted", "Message", "Any zone", "My zone", "Any names", "Latin names", "All", "Mage",
                                    "Next does", "<", ">", "Restore", "Answers", "Reply", "Check in", "Add my group", "Put this line back", "Trying every opener",
                                    "What we are", "How it started", "Time and real life", "Raids", "PvP", "Leveling", "New or returning", "Offer a run",
-                                   "Discord link", "Send the guild invite", "They said no", "Close" })) end,
+                                   "Discord link", "Prepare the guild invite", "Show invite command", "Cancel invite", "They said no", "Close" })) end,
   function() if chance(0.2) then db.templates[R(1, #db.templates)] = pick({ "Hi {name}", "", string.rep("y", 300), "{bogus} {zone} {level} {class} <{guild}>" }) end end,
   function() if chance(0.1) then db.reply = pick({ "FOLLOWUP join discord.gg/passthetorch", "FOLLOWUP discord.gg/x " .. string.rep("w", 300) }) end end,
   function() if chance(0.03) then login(false) end end,

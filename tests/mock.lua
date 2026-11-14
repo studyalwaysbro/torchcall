@@ -1,7 +1,8 @@
 -- Minimal stand-in for the WoW client API, enough to load and drive Torchcall offline.
 local M = { now = 1000, wall = 1791400000, timers = {}, sentAddon = {}, sentChat = {}, sentWho = {}, sentFilters = {}, invited = {},
             printed = {}, frames = {}, lockdown = false, inGuild = true, canInvite = true, myGuild = "True Torchmen",
-            myName = "Vesh Torchman", who = {}, races = { { name = "Orc", ID = 2 }, { name = "Troll", ID = 8 }, { name = "Tauren", ID = 6 }, { name = "Undead", ID = 5 } }, whoTotal = nil, whoToUi = false, addonResult = 0, zone = "Durotar" }
+            myName = "Vesh Torchman", who = {}, races = { { name = "Orc", ID = 2 }, { name = "Troll", ID = 8 }, { name = "Tauren", ID = 6 }, { name = "Undead", ID = 5 } }, whoTotal = nil, whoToUi = false, addonResult = 0, zone = "Durotar",
+            autoConfirmInvite = true, controlDown = false }
 
 -- secret values: any use other than passing them around blows up
 local secretMT = {
@@ -45,10 +46,17 @@ UISpecialFrames = {}
 SlashCmdList = {}
 function GetBuildInfo() return "1.60.1", "70245", "Oct 6 2026", 16001 end
 function GetCursorPosition() return 0, 0 end
+function IsControlKeyDown() return M.controlDown end
 function GetRealZoneText() return M.zone end
 Enum = { SocialWhoOrigin = { Social = 1 } }
 ERR_GUILD_JOIN_S = "%s has joined the guild."
+ERR_GUILD_INVITE_S = "You have invited %s to join your guild."
 ERR_GUILD_DECLINE_S = "%s declines your guild invitation."
+ERR_GUILD_DECLINE_AUTO_S = "%s is declining all guild invitations."
+ERR_ALREADY_IN_GUILD_S = "%s is already in a guild."
+ERR_ALREADY_INVITED_TO_GUILD_S = "%s has already been invited to a guild."
+ERR_CHAT_PLAYER_NOT_FOUND_S = "No player named '%s' is currently playing."
+ERR_GUILD_PLAYER_NOT_FOUND_S = "Player '%s' not found."
 
 C_Timer = {
   After = function(delay, fn) M.timers[#M.timers + 1] = { at = M.now + delay, fn = fn } end,
@@ -128,9 +136,18 @@ C_ChatInfo = {
 }
 C_GuildInfo = { Invite = function(name)
   if M.inviteError then error("blocked") end
+  if M.inviteForbidden then M.fire("ADDON_ACTION_FORBIDDEN", "Torchcall", M.inviteForbiddenSecret and M.secret() or "UNKNOWN()") return end
   if M.guard then M.guard("INVITE", name) end
   M.invited[#M.invited + 1] = name
+  if M.autoConfirmInvite then M.fire("CHAT_MSG_SYSTEM", ERR_GUILD_INVITE_S:format(name)) end
 end }
+function GuildInvite(name)
+  if M.inviteError then error("blocked") end
+  if M.inviteForbidden then M.fire("ADDON_ACTION_FORBIDDEN", "Torchcall", M.inviteForbiddenSecret and M.secret() or "UNKNOWN()") return end
+  if M.guard then M.guard("INVITE", name) end
+  M.invited[#M.invited + 1] = name
+  if M.autoConfirmInvite then M.fire("CHAT_MSG_SYSTEM", ERR_GUILD_INVITE_S:format(name)) end
+end
 for k, v in pairs(C_GuildInfoText) do C_GuildInfo[k] = v end
 -- the game's own "is this name in my guild" check; M.noMemberCheck removes it, as on a client without one
 function C_GuildInfo.MemberExistsByName(name)
@@ -195,7 +212,9 @@ local EXTRA = {
   Frame = {},
   Button = { SetText = setText, GetText = getText, RegisterForClicks = noop, LockHighlight = function(f) f.__lit = true end, UnlockHighlight = function(f) f.__lit = false end, SetHighlightTexture = noop,
              Enable = function(f) f.__off = false end, Disable = function(f) f.__off = true end, IsEnabled = function(f) return not f.__off end },
-  EditBox = { SetText = setText, GetText = getText, SetAutoFocus = noop, SetMaxLetters = noop, HasFocus = function() return false end, ClearFocus = noop },
+  EditBox = { SetText = setText, GetText = getText, SetAutoFocus = noop, SetMaxLetters = noop,
+              SetFocus = function(f) f.__focus = true end, HasFocus = function(f) return f.__focus == true end,
+              ClearFocus = function(f) f.__focus = false end, HighlightText = function(f) f.__highlighted = true end },
   GameTooltip = { SetOwner = noop, Show = REGION.Show, AddLine = function(f, text) assert(type(text) == "string") f.__lines[#f.__lines + 1] = text end },
   FontString = { SetText = setText, GetText = getText, SetJustifyH = noop, SetJustifyV = noop, SetWordWrap = noop },
   Texture = { SetTexture = noop, SetColorTexture = noop },
@@ -262,7 +281,9 @@ function M.reset(wipe)
   M.sentFilters = {}
   M.lockdown, M.inGuild, M.canInvite, M.addonResult = false, true, true, 0
   M.group, M.raid, M.roster, M.rosterHidden = {}, false, {}, nil
-  M.chatError, M.whoError, M.inviteError, M.who, M.whoTotal, M.whoToUi = nil, nil, nil, {}, nil, false
+  M.chatError, M.whoError, M.inviteError, M.inviteForbidden, M.inviteForbiddenSecret = nil, nil, nil, nil, nil
+  M.autoConfirmInvite, M.controlDown = true, false
+  M.who, M.whoTotal, M.whoToUi = {}, nil, false
   M.whoBlockFilters = nil
   UIParent = M.newFrame("Frame", "UIParent")
   Minimap = M.newFrame("Frame", "Minimap")

@@ -14,12 +14,13 @@
 
 local ADDON, ns = ...
 
-ns.VERSION = "1.8.0"
+ns.VERSION = "1.9.0"
 
 local WHO_GAP = 5             -- seconds between who searches (the server throttles faster ones)
-local WHO_TIMEOUT = 6         -- how long to wait for an answer before giving the search back
+local WHO_TIMEOUT = 30        -- Forever can take a while to return a who answer
 local WHO_MAX = 50            -- most results one search can return
 local INVITE_GAP = 2
+local INVITE_PENDING_FOR = 10 * 60
 local NEW_MAX_AGE = 12 * 3600 -- an uncontacted prospect was only known to be online when seen
 local KEPT_MAX_AGE = 60 * 86400
 local PROSPECT_CAP, LOG_CAP = 3000, 150
@@ -57,28 +58,62 @@ ns.try = try
 -- the game's own /who box makes and is never blocked. The self-heal below catches any client
 -- that blocks it without being named here.
 local WOW_PROJECT_CAMELOT_ID = 18
-local function filterTableBlocked()
+local function isCamelotProject()
   local id = rawget(_G, "WOW_PROJECT_ID")
   if id == nil then return false end
   return id == rawget(_G, "WOW_PROJECT_CAMELOT") or id == WOW_PROJECT_CAMELOT_ID
 end
+local function filterTableBlocked()
+  return isCamelotProject()
+end
 ns.FilterTableBlocked = filterTableBlocked
+
+-- Forever live refuses guild invites made by addon code. Other clients keep the API path,
+-- unless one of them refuses it too; that verdict is saved so the next press uses the same
+-- copy flow instead of trying a call the game has already rejected.
+local function inviteApiBlocked()
+  return isCamelotProject() or (TorchcallDB and TorchcallDB.inviteApiBlocked == true)
+end
+ns.InviteApiBlocked = inviteApiBlocked
 
 function ns.Print(msg)
   print("|cffff7d0aTorchcall:|r " .. tostring(msg))
 end
 
-function ns.Log(kind, msg)
+local function logLine(msg)
   local db = TorchcallDB
   if not db then return end
   local log = db.log
-  log[#log + 1] = date("%m-%d %H:%M:%S") .. " " .. kind .. ": " .. tostring(msg)
+  log[#log + 1] = date("%m-%d %H:%M:%S") .. " " .. tostring(msg)
   while #log > LOG_CAP do table.remove(log, 1) end
+end
+
+function ns.Log(kind, msg)
+  logLine(tostring(kind) .. ": " .. tostring(msg))
 end
 
 local function changed()
   if ns.OnChanged then ns.OnChanged() end
 end
+
+-- A prepared invite is separate from the conversation status. Reading it also performs the
+-- ten-minute expiry, so a hidden copy box never leaves someone stuck out of Next forever.
+local function invitePending(p)
+  local pending = p and p.invitePending
+  if type(pending) ~= "table" or type(pending.at) ~= "number" then
+    if p then p.invitePending = nil end
+    return nil
+  end
+  if time() - pending.at >= INVITE_PENDING_FOR then
+    p.invitePending = nil
+    p.inviteContactCounted = nil
+    return nil
+  end
+  return pending
+end
+ns.InvitePending = invitePending
+
+local inviteRepairNotice
 
 -- ---------------------------------------------------------------------------
 -- Saved data
@@ -93,6 +128,8 @@ local function initDB()
   db.stats = db.stats or {}
   db.opts = db.opts or {}
   db.log = db.log or {}
+  db.inviteTimes = type(db.inviteTimes) == "table" and db.inviteTimes or {}
+  db.migrations = type(db.migrations) == "table" and db.migrations or {}
   if type(db.templates) ~= "table" or #db.templates == 0 then
     db.templates = {}
     for i, t in ipairs(ns.TEMPLATES) do db.templates[i] = t end
@@ -139,6 +176,43 @@ local function initDB()
   for _, path in ipairs({ "cold", "warm" }) do
     if type(s[path]) ~= "table" then s[path] = {} end
     for _, k in ipairs({ "invited", "joined", "declined", "stayed", "left" }) do s[path][k] = s[path][k] or 0 end
+  end
+  -- Forever live has blocked addon invite calls since launch. Older Torchcall versions treated
+  -- a successful Lua call as a successful invite, so repair only those live-era rows once. Beta
+  -- rows are older than the cutoff and are left alone because invites worked there.
+  if isCamelotProject() and not db.migrations.invites190 then
+    local repaired, cold, warm, backToNew, underflow = 0, 0, 0, 0, 0
+    local function decrement(t, key)
+      if (t[key] or 0) <= 0 then underflow = underflow + 1; t[key] = 0
+      else t[key] = t[key] - 1 end
+    end
+    for name, p in pairs(db.prospects) do
+      if p.status == "invited" and not p.inviteConfirmed and (p.t or 0) >= 1793750400 then
+        repaired = repaired + 1
+        decrement(s, "invited")
+        if p.path == "cold" or p.path == "warm" then
+          if p.path == "cold" then cold = cold + 1 else warm = warm + 1 end
+          decrement(s[p.path], "invited")
+        end
+        if p.tpl then
+          p.status = "whispered"
+        else
+          p.status = "new"
+          db.contacted[name] = nil
+          backToNew = backToNew + 1
+        end
+        p.path = nil
+        p.inviteRepaired = true
+      end
+    end
+    db.migrations.invites190 = true
+    logLine(("repaired %d invites the game had blocked (cold %d, warm %d, back to new %d, underflow %d)")
+      :format(repaired, cold, warm, backToNew, underflow))
+    -- the chat line is for people, and only when there was something to put right
+    if repaired > 0 then
+      inviteRepairNotice = ("Fixed %d invites the game blocked since launch. They got your whisper but never the invite, so they now count as whispered. Invite now opens a /ginvite command to paste.")
+        :format(repaired)
+    end
   end
   if o.rotate == nil then o.rotate = true end -- try every opener, then lean on the one that gets answers
   if o.minimap == nil then o.minimap = true end
@@ -189,6 +263,7 @@ end
 local function prune()
   local db, now, count = TorchcallDB, time(), 0
   for name, p in pairs(db.prospects) do
+    invitePending(p)
     local age = now - (p.t or p.seen or 0)
     if p.status == "new" and now - (p.seen or 0) > NEW_MAX_AGE then
       db.prospects[name] = nil
@@ -238,19 +313,21 @@ local function findProspect(name)
 end
 ns.FindProspect = findProspect
 
--- Takes one who result. Returns true when it added a new prospect.
+-- Takes one who result and says what it was. "Known" means a guildless player already on
+-- the list or in the permanent contact memory; they are counted honestly but never re-added.
 local function addFromWho(info)
-  if type(info) ~= "table" then return false end
+  if type(info) ~= "table" then return "unreadable" end
   local name, guild = plain(info.fullName), plain(info.fullGuildName)
-  if type(name) ~= "string" or name == "" or name == myName then return false end
+  if type(name) ~= "string" or name == "" or type(guild) ~= "string" then return "unreadable" end
+  if name == myName then return "self" end
   local known = TorchcallDB.prospects[name]
-  -- contacted once, some time ago, and the detailed record has since been dropped
-  if not known and TorchcallDB.contacted[name] then return false end
-  if type(guild) ~= "string" or guild ~= "" then
+  if guild ~= "" then
     -- in a guild (or the game would not say): not a prospect, and no longer one if they were
     if known and known.status == "new" then TorchcallDB.prospects[name] = nil end
-    return false
+    return "guilded"
   end
+  -- contacted once, some time ago, and the detailed record has since been dropped
+  if not known and TorchcallDB.contacted[name] then return "known" end
   local level, class = plain(info.level), plain(info.filename)
   local entry = known or { name = name, status = "new" }
   entry.level = (type(level) == "number" and level > 0) and level or entry.level or 0
@@ -260,8 +337,9 @@ local function addFromWho(info)
   entry.zone = plain(info.area) or entry.zone
   entry.seen = time()
   TorchcallDB.prospects[name] = entry
-  return known == nil
+  return known and "known" or "new"
 end
+ns.AddFromWho = addFromWho
 
 -- A waiting player was only known to be online when a search saw them.
 local function stale(p)
@@ -430,6 +508,7 @@ function ns.List(kind)
   dropStale()
   local rows, hidden = {}, 0
   for _, p in pairs(TorchcallDB.prospects) do
+    invitePending(p)
     if kind == "new" then
       if freshAnswer(p) then
         rows[#rows + 1] = p
@@ -460,6 +539,7 @@ end
 function ns.Counts()
   local c = { new = 0, hidden = 0, whispered = 0, invited = 0, joined = 0, declined = 0, taken = 0, skipped = 0, guilded = 0, replied = 0 }
   for _, p in pairs(TorchcallDB.prospects) do
+    invitePending(p)
     if p.status == "new" and not matches(p) then
       c.hidden = c.hidden + 1
     else
@@ -694,12 +774,13 @@ function ns.NextSearch()
   pending = q
   sends = sends + 1
   local mine = sends -- the same search sent again later has a timer of its own
-  note("Searching " .. describe(q) .. "...")
+  note(("Searching %s... The game can take up to %d seconds."):format(describe(q), WHO_TIMEOUT))
   C_Timer.After(WHO_TIMEOUT, function()
     if pending ~= q or sends ~= mine then return end
     pending = nil
     setWhoToUi(false)
     table.insert(queue, 1, q)
+    logLine("who " .. queryText(q) .. " timeout")
     note("The game was slow to answer that one. Press Continue to try it again.")
   end)
   return true
@@ -745,7 +826,7 @@ local function onWhoResults()
     return
   end
   if type(total) ~= "number" then total = shown end
-  local added, wrongClass, rightClass, wrongRace = 0, 0, 0, 0
+  local added, known, guildless, wrongClass, rightClass, wrongRace = 0, 0, 0, 0, 0, 0
   local want = wantedClasses(q)
   for i = 1, shown do
     local info = try(C_FriendList.GetWhoInfo, i)
@@ -756,18 +837,28 @@ local function onWhoResults()
       end
       if q.race and type(race) == "string" and race ~= q.race then wrongRace = wrongRace + 1 end
     end
-    if addFromWho(info) then added = added + 1 end
+    local classed = addFromWho(info)
+    if classed == "new" then added, guildless = added + 1, guildless + 1
+    elseif classed == "known" then known, guildless = known + 1, guildless + 1 end
   end
+  logLine(("who %s shown=%d total=%d noguild=%d new=%d known=%d")
+    :format(queryText(q), shown, total, guildless, added, known))
   TorchcallDB.stats.found = TorchcallDB.stats.found + added
   local capped = total > shown or shown >= WHO_MAX
   local text
   if capped and total <= shown then
     -- the server caps the reported total at the same fifty, so "50 of 50" would be a lie
-    text = ("%s: at least %d online, %d new without a guild."):format(describe(q), shown, added)
+    text = ("%s: at least %d online. Of the %d shown, %d have no guild: %d new, %d already on your list.")
+      :format(describe(q), shown, shown, guildless, added, known)
   elseif capped then
-    text = ("%s: showing %d of %d online, %d new without a guild."):format(describe(q), shown, math.max(total, shown), added)
+    text = ("%s: showing %d of %d online. Of those, %d have no guild: %d new, %d already on your list.")
+      :format(describe(q), shown, math.max(total, shown), guildless, added, known)
   else
-    text = ("%s: %d online, %d new without a guild."):format(describe(q), total, added)
+    text = ("%s: %d online, %d with no guild: %d new, %d already on your list.")
+      :format(describe(q), total, guildless, added, known)
+  end
+  if guildless > 0 and added == 0 then
+    text = text .. " Everyone without a guild here has already heard from you: try other levels or classes."
   end
   -- The game's class filter was asked for and the answer held other classes. It was read the
   -- wrong way round, or this client ignores it: try the other reading, then the search words.
@@ -1053,13 +1144,15 @@ end
 
 -- The game refuses chat an addon sends by itself, off a timer instead of a key press or a click.
 -- It says so with an event, not an error, so the refusal is noted there (see ADDON_ACTION_BLOCKED).
-local chatRefused = false
+local chatRefused, chattingOurs = false, false
 local NEEDS_PRESS = "The game only lets an addon speak from a key press or a click."
 local function sendChat(text, channel, target)
   local send = (C_ChatInfo and C_ChatInfo.SendChatMessage) or SendChatMessage
   if type(send) ~= "function" then return false, "This client has no chat function for addons." end
   chatRefused = false
+  chattingOurs = true
   local ok, err = pcall(send, text, channel, nil, target)
+  chattingOurs = false
   if not ok then
     ns.Log("chat", err)
     return false, "The game refused that message."
@@ -1388,18 +1481,50 @@ function ns.WelcomeAll()
     or ("Welcomed %s."):format(count == 1 and waiting[1].name or (count .. " recruits"))
 end
 
--- The game stopped something this addon did by itself. If that was a welcome, it never reached
--- guild chat: take the mark back, stop trying by timer, and leave it to the Joined tab.
+local invitingOurs, inviteRefused, invitingProspect = false, false, nil
+local lastApiInviteAt, lastApiProspect = -1000, nil
+
+local function switchInviteToCopy(p, synchronous)
+  local db = TorchcallDB
+  if not db then return end
+  local wasBlocked = db.inviteApiBlocked == true
+  db.inviteApiBlocked = true
+  if p then
+    local pending = invitePending(p)
+    if not pending then pending = { at = time(), mode = "copy" }; p.invitePending = pending end
+    pending.mode = "copy"
+  end
+  if not wasBlocked then ns.Log("invite", "the game blocked addon invites; using the copy command from now on") end
+  if synchronous and p and ns.UI and ns.UI.ShowInviteBox then
+    ns.UI.ShowInviteBox(p)
+  elseif p then
+    ns.Print("The game blocked addon invites. Press Invite again to get the command to paste.")
+  end
+  changed()
+end
+
+-- The game stopped something this addon did. Sentinels identify a synchronous refusal before
+-- looking at its payload because Forever's payload can be secret or merely "UNKNOWN()".
 local function actionRefused(addon, what)
+  addon = plain(addon)
   if addon ~= ADDON then return end
-  ns.Log("refused", tostring(what))
-  chatRefused = true
-  -- Our own who search is on the stack: this refusal is that search, not a welcome. On this
-  -- client the payload is "UNKNOWN()", so its text cannot name it; the call sentinel can. Return
-  -- before the welcome-revert so a blocked search never takes a welcome mark back.
+  local label = plain(what)
+  if type(label) ~= "string" then label = "unknown" end
+  ns.Log("refused", label)
   if sendingOurs then whoRefused = true return end
+  if invitingOurs then
+    inviteRefused = true
+    switchInviteToCopy(invitingProspect, true)
+    return
+  end
+  local lastPending = lastApiProspect and invitePending(lastApiProspect)
+  if lastPending and lastPending.mode == "api" and GetTime() - lastApiInviteAt <= 3 then
+    switchInviteToCopy(lastApiProspect, false)
+    return
+  end
+  if chattingOurs then chatRefused = true return end
   -- a search or an invite being stopped says nothing about the welcome before it
-  if type(what) == "string" and (what:find("Who", 1, true) or what:find("Invite", 1, true)) then return end
+  if label:find("Who", 1, true) or label:find("Invite", 1, true) then return end
   local said = lastWelcomed
   if said and GetTime() - lastWelcomedAt < 3 then
     -- the refusal arrived after the call had already returned
@@ -1413,11 +1538,73 @@ local function actionRefused(addon, what)
   end
 end
 
--- One guild invite to one player.
+-- The game permits ten guild invite attempts in a rolling minute. Keep only the ten times
+-- needed to decide the next press, across reloads.
+local function inviteLimitWait()
+  local times, now, clean = TorchcallDB.inviteTimes, time(), {}
+  for _, at in ipairs(times) do if type(at) == "number" then clean[#clean + 1] = at end end
+  table.sort(clean)
+  while #clean > 10 do table.remove(clean, 1) end
+  TorchcallDB.inviteTimes = clean
+  if #clean >= 10 and now - clean[1] < 60 then return math.max(1, math.ceil(60 - (now - clean[1]))) end
+  return 0
+end
+
+local function countInviteAttempt()
+  local times = TorchcallDB.inviteTimes
+  times[#times + 1] = time()
+  while #times > 10 do table.remove(times, 1) end
+end
+
+function ns.CancelInvite(name)
+  local p = findProspect(name)
+  if not p or not invitePending(p) then return false, "There is no prepared invite to cancel." end
+  p.invitePending = nil
+  p.inviteContactCounted = nil
+  if ns.UI and ns.UI.HideInviteBox then ns.UI.HideInviteBox(p.name) end
+  changed()
+  return true
+end
+
+-- Every confirmed invite, whether the command was pasted or the API worked, passes here once.
+local function confirmInvite(p, source)
+  if not p or p.inviteConfirmed then return false end
+  local db, now = TorchcallDB, time()
+  local firstContact = p.status == "new"
+  if p.status == "new" or p.status == "whispered" then p.status = "invited" end
+  p.path = p.replied and "warm" or "cold"
+  p.invitedAt, p.t = now, now
+  db.contacted[p.name] = now
+  db.stats.invited = db.stats.invited + 1
+  db.stats[p.path].invited = db.stats[p.path].invited + 1
+  p.inviteConfirmed = true
+  p.invitePending = nil
+  if firstContact then
+    bucket(p, "sent")
+    if not p.inviteContactCounted then countContact() end
+    if ns.Comm then ns.Comm.Tell(p.name) end
+  end
+  p.inviteContactCounted = nil
+  ns.Log("invite", "confirmed " .. p.name .. " from " .. tostring(source or "game"))
+  changed()
+  return true
+end
+ns.ConfirmInvite = confirmInvite
+
+-- One press prepares one guild invite. Forever shows a command to copy; clients whose invite
+-- API still works call it once and wait for the game's own confirmation before changing status.
 function ns.Invite(name)
   local db = TorchcallDB
   local p = db.prospects[name]
   if not p then return false, "That player is not on the list." end
+  local prepared = invitePending(p)
+  if prepared then
+    if prepared.mode == "copy" then
+      if ns.UI and ns.UI.ShowInviteBox then ns.UI.ShowInviteBox(p) end
+      return true
+    end
+    return false, "Waiting for the game to confirm that invite."
+  end
   if p.status ~= "new" and p.status ~= "whispered" then
     return false, name .. " is marked " .. p.status .. "."
   end
@@ -1426,34 +1613,50 @@ function ns.Invite(name)
   if not can then return false, why end
   local wait = INVITE_GAP - (GetTime() - lastInvite)
   if wait > 0 then return false, ("Next invite in %d seconds."):format(math.ceil(wait)) end
+  local inviteWait = inviteLimitWait()
+  if inviteWait > 0 then
+    return false, ("The game allows 10 guild invites a minute. Next one in %d seconds."):format(inviteWait)
+  end
   local first = p.status == "new"
   local limit = first and overLimit()
   if limit then return false, limit end
-  local invite = (C_GuildInfo and C_GuildInfo.Invite) or GuildInvite
-  if type(invite) ~= "function" then return false, "This client has no guild invite for addons." end
   -- An invite out of nowhere is a box with a guild name on it. Someone not yet spoken to gets
-  -- the opener first, the same one the Whisper button would send, then the invite: one press,
-  -- one player. If the whisper cannot go (too soon, an instance), neither does the invite.
+  -- the opener first, the same one the Whisper button would send, then the command is prepared.
+  -- If the whisper cannot go (too soon, an instance), neither step happens.
+  -- Settle how the invite will go before anything is sent, so a client with no invite at all
+  -- never gets the opener whispered and then the invite refused.
+  local blocked = inviteApiBlocked()
+  local invite = not blocked and ((C_GuildInfo and C_GuildInfo.Invite) or GuildInvite) or nil
+  if not blocked and type(invite) ~= "function" then return false, "This client has no guild invite for addons." end
   if first and db.opts.pitch then
     local sent, why = ns.Whisper(name)
     if not sent then return false, why end
-    first = false -- the whisper was the first contact, and was counted as one
+    first = false
   end
-  local ok, err = pcall(invite, name)
-  if not ok then
-    ns.Log("invite", err)
-    return false, "The game refused that invite."
-  end
-  lastInvite = GetTime()
-  p.path = p.replied and "warm" or "cold" -- had they spoken to us before the invite?
-  p.status, p.t = "invited", time()
-  db.contacted[name] = p.t
-  db.stats.invited = db.stats.invited + 1
-  db.stats[p.path].invited = db.stats[p.path].invited + 1
+  p.invitePending = { at = time(), mode = blocked and "copy" or "api" }
   if first then
-    bucket(p, "sent")
     countContact()
-    if ns.Comm then ns.Comm.Tell(name) end
+    p.inviteContactCounted = true
+  end
+  countInviteAttempt()
+  lastInvite = GetTime()
+  if blocked then
+    if ns.UI and ns.UI.ShowInviteBox then ns.UI.ShowInviteBox(p) end
+    changed()
+    return true
+  end
+  inviteRefused = false
+  invitingOurs, invitingProspect = true, p
+  lastApiInviteAt, lastApiProspect = GetTime(), p
+  local ok, err = pcall(invite, name)
+  invitingOurs, invitingProspect = false, nil
+  if inviteRefused then return true end
+  if not ok then
+    p.invitePending = nil
+    p.inviteContactCounted = nil
+    ns.Log("invite", plain(err) or "unknown")
+    changed()
+    return false, "The game refused that invite."
   end
   changed()
   return true
@@ -1462,6 +1665,8 @@ end
 function ns.Skip(name)
   local p = TorchcallDB.prospects[name]
   if not p then return false end
+  p.invitePending = nil
+  p.inviteContactCounted = nil
   p.status, p.skipped = "skipped", time()
   -- the first contact writes the record that stops a second ask; skipping someone already
   -- contacted keeps the original time, which the funnel numbers and the prune read
@@ -1568,7 +1773,7 @@ end
 -- The player the Next button would act on.
 function ns.NextTarget()
   for _, p in ipairs(ns.List("new")) do
-    if p.status == "new" then return p end
+    if p.status == "new" and not invitePending(p) then return p end
   end
 end
 
@@ -1772,11 +1977,12 @@ ns.formatToPattern = formatToPattern
 
 -- the game's own message formats, with the English text as a fallback
 local SYSTEM_LINES = {
+  { "ERR_GUILD_INVITE_S", "You have invited %s to join your guild.", "invite" },
   { "ERR_GUILD_JOIN_S", "%s has joined the guild.", "joined" },
   { "ERR_GUILD_DECLINE_S", "%s declines your guild invitation.", "declined" },
   { "ERR_GUILD_DECLINE_AUTO_S", "%s is declining all guild invitations.", "declined" },
   { "ERR_ALREADY_IN_GUILD_S", "%s is already in a guild.", "guilded" },
-  { "ERR_ALREADY_INVITED_TO_GUILD_S", "%s has already been invited to a guild.", "guilded" },
+  { "ERR_ALREADY_INVITED_TO_GUILD_S", "%s has already been invited to a guild.", "otherinvite" },
   { "ERR_CHAT_PLAYER_NOT_FOUND_S", "No player named '%s' is currently playing.", "gone" },
   { "ERR_GUILD_PLAYER_NOT_FOUND_S", "Player '%s' not found.", "gone" },
   { "ERR_CHAT_IGNORED_S", "%s is ignoring you.", "skipped" },
@@ -1811,7 +2017,16 @@ function handlers.CHAT_MSG_SYSTEM(text)
     local p = caps[sp[2]] and findProspect(caps[sp[2]])
     if p then
       local outcome, db = sp[3], TorchcallDB
-      if outcome == "gone" then
+      if outcome == "invite" then
+        confirmInvite(p, "system message")
+        return
+      elseif outcome == "otherinvite" then
+        p.invitePending = nil
+        p.inviteContactCounted = nil
+        ns.Print(p.name .. " already has a guild invite waiting from someone else.")
+      elseif outcome == "gone" then
+        p.invitePending = nil
+        p.inviteContactCounted = nil
         -- logged off since the search: a waiting player is forgotten and a later search
         -- finds them again; someone already contacted stays on record so they are not asked twice
         if p.status == "new" then db.prospects[p.name] = nil end
@@ -1820,43 +2035,49 @@ function handlers.CHAT_MSG_SYSTEM(text)
           p.checked = nil
           db.stats.checkins = math.max(0, db.stats.checkins - 1)
         end
-      elseif outcome == "joined" and p.status ~= "joined" and (p.by or (p.status ~= "whispered" and p.status ~= "invited")) then
-        -- joined through somebody else: off the list for good, and not counted as yours
-        p.by = p.by or "another recruiter"
-        p.status, p.t = "joined", time()
-        db.contacted[p.name] = p.t
       elseif outcome == "joined" then
-        if p.status ~= "joined" then
-          db.stats.joined = db.stats.joined + 1
-          if p.tpl then ns.TemplateStat(p.tpl, "joined") end
-          if p.path then db.stats[p.path].joined = db.stats[p.path].joined + 1 end
-          bucket(p, "joined")
-          celebrate(p)
+        local ours = not p.by and (invitePending(p) or p.status == "whispered" or p.status == "invited")
+        if p.status ~= "joined" and ours then confirmInvite(p, "guild join") end
+        if p.status ~= "joined" and (p.by or (p.status ~= "whispered" and p.status ~= "invited")) then
+        -- joined through somebody else: off the list for good, and not counted as yours
+          p.by = p.by or "another recruiter"
           p.status, p.t = "joined", time()
-          -- The welcome, a few seconds after the game's own "has joined" line. Only for someone
-          -- you recruited, and once: a second recruiter's addon stays quiet about your recruit.
-          if db.opts.autowelcome and C_Timer and C_Timer.After then
-            local function greet(again)
-              if not TorchcallDB or not TorchcallDB.opts.autowelcome or p.status ~= "joined" or p.welcomed then return end
-              -- this client has already refused a welcome sent by timer: ask for the press straight away
-              if TorchcallDB.opts.pressOnly then offerWelcome(p) return end
-              local sent, why = ns.Welcome(p.name)
-              if why == NEEDS_PRESS then
-                TorchcallDB.opts.pressOnly = true
-                offerWelcome(p)
-                return
+          db.contacted[p.name] = p.t
+        else
+          if p.status ~= "joined" then
+            db.stats.joined = db.stats.joined + 1
+            if p.tpl then ns.TemplateStat(p.tpl, "joined") end
+            if p.path then db.stats[p.path].joined = db.stats[p.path].joined + 1 end
+            bucket(p, "joined")
+            celebrate(p)
+            p.status, p.t = "joined", time()
+            -- The welcome, a few seconds after the game's own "has joined" line. Only for someone
+            -- you recruited, and once: a second recruiter's addon stays quiet about your recruit.
+            if db.opts.autowelcome and C_Timer and C_Timer.After then
+              local function greet(again)
+                if not TorchcallDB or not TorchcallDB.opts.autowelcome or p.status ~= "joined" or p.welcomed then return end
+                -- this client has already refused a welcome sent by timer: ask for the press straight away
+                if TorchcallDB.opts.pressOnly then offerWelcome(p) return end
+                local sent, why = ns.Welcome(p.name)
+                if why == NEEDS_PRESS then
+                  TorchcallDB.opts.pressOnly = true
+                  offerWelcome(p)
+                  return
+                end
+                -- two people joined together, or the game is holding chat: one more try, then it is the Joined tab's job
+                if not sent and again then C_Timer.After((TorchcallDB.opts.gap or 4) + 2, function() greet(false) end)
+                elseif not sent then offerWelcome(p) end
               end
-              -- two people joined together, or the game is holding chat: one more try, then it is the Joined tab's job
-              if not sent and again then C_Timer.After((TorchcallDB.opts.gap or 4) + 2, function() greet(false) end)
-              elseif not sent then offerWelcome(p) end
+              C_Timer.After(4, function() greet(true) end)
             end
-            C_Timer.After(4, function() greet(true) end)
+            if ns.Comm and ns.Comm.Score then ns.Comm.Score() end
           end
-          if ns.Comm and ns.Comm.Score then ns.Comm.Score() end
+          p.status, p.t = "joined", time()
+          ns.Print(p.name .. " joined the guild.")
         end
-        p.status, p.t = "joined", time()
-        ns.Print(p.name .. " joined the guild.")
       elseif outcome == "declined" then
+        p.invitePending = nil
+        p.inviteContactCounted = nil
         if p.status ~= "declined" then
           db.stats.declined = db.stats.declined + 1
           if p.path then db.stats[p.path].declined = db.stats[p.path].declined + 1 end
@@ -1905,6 +2126,8 @@ end
 function handlers.CHAT_MSG_IGNORED(_, sender)
   local p = findProspect(plain(sender))
   if not p or p.status == "skipped" or p.status == "joined" then return end
+  p.invitePending = nil
+  p.inviteContactCounted = nil
   p.status, p.t = "skipped", time()
   TorchcallDB.contacted[p.name] = p.t
   changed()
@@ -1944,6 +2167,10 @@ function handlers.PLAYER_LOGIN()
     ns.whoHooked = pcall(hooksecurefunc, C_FriendList, "SendWho", function() onForeignWho() end)
   end
   ns.Log("login", myName .. " v" .. ns.VERSION .. " build " .. tostring((try(GetBuildInfo))))
+  if inviteRepairNotice then
+    ns.Print(inviteRepairNotice)
+    inviteRepairNotice = nil
+  end
   if ns.Comm then ns.Comm.Init() end
   if ns.UI then ns.UI.Init() end
   -- ask the game for the guild roster once, so recruits can be checked against it. A request

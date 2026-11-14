@@ -12,12 +12,12 @@ local ROWS, ROW_HEIGHT = 12, 21
 local COLS = { { "Player", 150, "LEFT", "name" }, { "Lvl", 28, "RIGHT", "level" }, { "Class", 70, "LEFT", "class" },
                { "Zone", 130, "LEFT", "zone" }, { "Status", 86, "LEFT", "seen" } }
 local MODES = { "whisper", "invite" }
-local MODE_LABEL = { whisper = "Next does: whisper", invite = "Next does: invite" }
+local MODE_LABEL = { whisper = "Next does: whisper", invite = "Next does: prepare invite" }
 local STATUS_LABEL = { new = "new", whispered = "whispered", invited = "invited", joined = GREEN .. "joined|r",
                        declined = "declined", taken = "guildmate has it", guilded = "in a guild", skipped = "skipped" }
 
 local opts
-local main, minimapButton
+local main, minimapButton, inviteBox
 local currentTab, offset = 1, 0
 local zoneOnly = false
 local talkingTo            -- the player the conversation panel is open on
@@ -130,6 +130,80 @@ local function showTooltip(owner, title, ...)
   GameTooltip:Show()
 end
 
+local function buildInviteBox()
+  local f = CreateFrame("Frame", "TorchcallInviteFrame", UIParent, BackdropTemplateMixin and "BackdropTemplate" or nil)
+  f:SetSize(430, 155)
+  f:SetPoint("CENTER")
+  f:SetFrameStrata("DIALOG")
+  f:SetClampedToScreen(true)
+  f:SetMovable(true)
+  f:EnableMouse(true)
+  f:RegisterForDrag("LeftButton")
+  f:SetScript("OnDragStart", f.StartMoving)
+  f:SetScript("OnDragStop", f.StopMovingOrSizing)
+  if f.SetBackdrop then
+    f:SetBackdrop({ bgFile = "Interface\\DialogFrame\\UI-DialogBox-Background",
+                    edgeFile = "Interface\\Tooltips\\UI-Tooltip-Border", edgeSize = 16,
+                    insets = { left = 4, right = 4, top = 4, bottom = 4 } })
+  end
+  f.title = makeLabel(f, "GameFontNormal")
+  f.title:SetPoint("TOPLEFT", 16, -14)
+  f.instruction = makeLabel(f, "GameFontHighlight", "Ctrl+C, then Enter, Ctrl+V, Enter")
+  f.instruction:SetPoint("TOPLEFT", 16, -42)
+  f.edit = CreateFrame("EditBox", nil, f, "InputBoxTemplate")
+  f.edit:SetSize(398, 24)
+  f.edit:SetPoint("TOPLEFT", 16, -66)
+  f.edit:SetAutoFocus(false)
+  f.edit:SetMaxLetters(255)
+  f.edit:SetScript("OnTextChanged", function(self, userInput)
+    if not userInput or f.restoring then return end
+    f.restoring = true
+    self:SetText(f.command or "")
+    self:HighlightText()
+    f.restoring = false
+  end)
+  f.edit:SetScript("OnKeyDown", function(_, key)
+    if key == "C" and type(IsControlKeyDown) == "function" and IsControlKeyDown() then
+      C_Timer.After(0, function()
+        if f:IsShown() then f:Hide() end
+        ns.Print("Copied. Press Enter, Ctrl+V, Enter to send it.")
+      end)
+    end
+  end)
+  f.edit:SetScript("OnEnterPressed", function() f:Hide() end)
+  f.edit:SetScript("OnEscapePressed", function() f:Hide() end)
+  f.close = makeButton(f, "Close", 90, 22)
+  f.close:SetPoint("BOTTOMRIGHT", -16, 14)
+  f.close:SetScript("OnClick", function() f:Hide() end)
+  f.cancel = makeButton(f, "Cancel invite", 120, 22)
+  f.cancel:SetPoint("RIGHT", f.close, "LEFT", -8, 0)
+  f.cancel:SetScript("OnClick", function()
+    if f.player then ns.CancelInvite(f.player) end
+    f:Hide()
+  end)
+  f:Hide()
+  return f
+end
+
+function UI.ShowInviteBox(p)
+  p = type(p) == "table" and p or (type(p) == "string" and TorchcallDB.prospects[p])
+  local pending = p and ns.InvitePending(p)
+  if not p or not pending or pending.mode ~= "copy" then return false end
+  if not inviteBox then inviteBox = buildInviteBox() end
+  inviteBox.player = p.name
+  inviteBox.command = "/ginvite " .. p.name
+  inviteBox.title:SetText("Guild invite: " .. p.name)
+  inviteBox.edit:SetText(inviteBox.command)
+  inviteBox:Show()
+  inviteBox.edit:SetFocus()
+  inviteBox.edit:HighlightText()
+  return true
+end
+
+function UI.HideInviteBox(name)
+  if inviteBox and (not name or inviteBox.player == name) then inviteBox:Hide() end
+end
+
 local function buildRow(list, r)
   local row = CreateFrame("Frame", nil, list)
   row:SetPoint("TOPLEFT", 0, -r * ROW_HEIGHT - 2)
@@ -154,10 +228,19 @@ local function buildRow(list, r)
   end
   row.skip = makeButton(row, "Skip", 42, 19)
   row.skip:SetPoint("RIGHT", row, "RIGHT", 0, 0)
-  row.skip:SetScript("OnClick", function() if row.name then act(ns.Skip, row.name) end end)
+  row.skip:SetScript("OnClick", function()
+    if not row.name then return end
+    if row.cancelInvite then act(ns.CancelInvite, row.name) else act(ns.Skip, row.name) end
+  end)
   row.invite = makeButton(row, "Invite", 54, 19)
   row.invite:SetPoint("RIGHT", row.skip, "LEFT", -3, 0)
   row.invite:SetScript("OnClick", function() if row.name then act(ns.Invite, row.name) end end)
+  row.invite:SetScript("OnEnter", function(self)
+    showTooltip(self, "Prepare guild invite",
+      "Forever opens a copy box. Copy the /ginvite command, then paste it into chat and press Enter.",
+      "Torchcall counts the invite only after the game confirms it.")
+  end)
+  row.invite:SetScript("OnLeave", function() GameTooltip:Hide() end)
   row.whisper = makeButton(row, "Whisper", 62, 19)
   row.whisper:SetPoint("RIGHT", row.invite, "LEFT", -3, 0)
   row.whisper:SetScript("OnClick", function()
@@ -373,7 +456,7 @@ local function buildTalkPanel(f)
     panel.topics[i] = b
   end
   local y = -100 - #ns.ANSWERS * 25 - 8
-  panel.invite = makeButton(panel, "Send the guild invite", 206, 24)
+  panel.invite = makeButton(panel, "Prepare the guild invite", 206, 24)
   panel.invite:SetPoint("TOPLEFT", 12, y)
   panel.invite:SetScript("OnClick", function() if talkingTo then act(ns.Invite, talkingTo) end end)
   panel.skip = makeButton(panel, "They said no", 100, 22)
@@ -575,8 +658,8 @@ local function buildMain()
   f.mode:SetScript("OnEnter", function(self)
     showTooltip(self, "What the Next button does",
       "Whisper: sends your message and waits for an answer. This is the polite default.",
-      "Invite: sends a guild invite with no message.",
-      "Every press is one whisper or one invite to one player. Nothing is sent on its own.",
+      "Prepare invite: opens a /ginvite command to copy and paste on Forever.",
+      "Every press handles one player. Nothing is sent on its own.",
       "You can bind a key to Next under Options, Keybindings, AddOns.")
   end)
   f.mode:SetScript("OnLeave", function() GameTooltip:Hide() end)
@@ -633,8 +716,8 @@ function UI.RefreshAnswers()
   end
   local out = {
     ("%sWhispers|r  %d sent, %d answered (%s)"):format(GOLD, f.whispered, f.replied, pct(f.replyRate)),
-    ("%sInvites after a conversation|r  %d sent, %d joined (%s)%s"):format(GOLD, f.warm.invited, f.warm.joined, pct(f.warm.rate), kept(f.warm)),
-    ("%sInvites with no conversation|r  %d sent, %d joined (%s)%s"):format(GOLD, f.cold.invited, f.cold.joined, pct(f.cold.rate), kept(f.cold)),
+    ("%sConfirmed invites after a conversation|r  %d, %d joined (%s)%s"):format(GOLD, f.warm.invited, f.warm.joined, pct(f.warm.rate), kept(f.warm)),
+    ("%sConfirmed invites with no conversation|r  %d, %d joined (%s)%s"):format(GOLD, f.cold.invited, f.cold.joined, pct(f.cold.rate), kept(f.cold)),
     ("%sAnswers sent|r %d    %sCheck-ins sent|r %d"):format(GOLD, TorchcallDB.stats.answers, GOLD, TorchcallDB.stats.checkins),
     "",
     f.advice,
@@ -665,14 +748,16 @@ local function refreshTalk()
     if open[b.key] then b:Enable() else b:Disable() end
     if suggestion == b.key and open[b.key] then b:LockHighlight() else b:UnlockHighlight() end
   end
-  if ns.CanInvite() and p.status == "whispered" then
+  local pending = ns.InvitePending(p)
+  if (ns.CanInvite() and p.status == "whispered") or pending then
     panel.invite:Enable()
     if suggestion == "invite" then panel.invite:LockHighlight() else panel.invite:UnlockHighlight() end
   else
     panel.invite:Disable()
     panel.invite:UnlockHighlight()
   end
-  panel.invite:SetText(p.status == "whispered" and "Send the guild invite" or (p.status == "joined" and "Joined" or "Invited"))
+  panel.invite:SetText(pending and (pending.mode == "copy" and "Show invite command" or "Waiting for confirmation")
+    or (p.status == "whispered" and "Prepare the guild invite" or (p.status == "joined" and "Joined" or "Invite confirmed")))
   if p.status == "whispered" then panel.skip:Show() else panel.skip:Hide() end
   panel:Show()
 end
@@ -681,7 +766,7 @@ function UI.Refresh()
   if not main or not main:IsShown() then return end
   local db, c = TorchcallDB, ns.Counts()
   local hiddenNote = c.hidden > 0 and (GREY .. " (+" .. c.hidden .. " filtered out)|r") or ""
-  main.summary:SetText(("%sWaiting|r %s%d|r%s    %sAnswered|r %s%d|r    %sWhispered|r %s%d|r    %sInvited|r %s%d|r    %sJoined|r %s%d|r    %shour %d/%d, day %d%s|r")
+  main.summary:SetText(("%sWaiting|r %s%d|r%s    %sAnswered|r %s%d|r    %sWhispered|r %s%d|r    %sConfirmed|r %s%d|r    %sJoined|r %s%d|r    %shour %d/%d, day %d%s|r")
     :format(GOLD, WHITE, c.new, hiddenNote, GOLD, WHITE, c.replied, GOLD, WHITE, db.stats.whispered, GOLD, WHITE, db.stats.invited,
             GOLD, WHITE, db.stats.joined, GREY, ns.SentThisHour(), opts.hourly, ns.SentToday(), opts.daily > 0 and ("/" .. opts.daily) or " (no daily limit)"))
   -- If the queued bands were built for other filters, the button is a plain Search that starts
@@ -781,6 +866,8 @@ function UI.Refresh()
         if p.status == "joined" and p.welcomed then status = GREEN .. "welcomed|r" end
         if ns.CanWelcome(p) then status = GOLD .. "say hello|r" end
         if p.stayed == false then status = GREY .. "joined, then left|r" end
+        local pending = ns.InvitePending(p)
+        if pending then status = GREEN .. "invite ready|r" end
         row.cells[5]:SetText(status .. GREY .. " " .. ago(p.status == "new" and p.seen or p.t) .. "|r")
         -- one button per row, for the one thing worth doing next with this player
         local talking = p.replied and (p.status == "whispered" or p.status == "invited" or p.status == "joined")
@@ -795,11 +882,13 @@ function UI.Refresh()
         else
           row.whisper:Hide()
         end
-        if canInvite and (p.status == "new" or p.status == "whispered") then row.invite:Show() else row.invite:Hide() end
+        if pending or (canInvite and (p.status == "new" or p.status == "whispered")) then row.invite:Show() else row.invite:Hide() end
         -- invited is included so an answered-then-invited player who never accepts can be
         -- let go; the status check is deliberate, not answered(): aged and linked rows on
         -- the Contacted tab need the same way out
-        if p.status == "new" or p.status == "whispered" or p.status == "invited" then row.skip:Show() else row.skip:Hide() end
+        row.cancelInvite = pending and true or false
+        row.skip:SetText(pending and "Cancel" or "Skip")
+        if pending or p.status == "new" or p.status == "whispered" or p.status == "invited" then row.skip:Show() else row.skip:Hide() end
         row:Show()
       else
         row.name = nil
@@ -829,7 +918,7 @@ function UI.Refresh()
   main.mode:SetText(MODE_LABEL[opts.mode] or opts.mode)
   local target = ns.NextTarget()
   if target then
-    local verb = opts.mode == "invite" and "Invite" or "Whisper"
+    local verb = opts.mode == "invite" and "Prepare invite" or "Whisper"
     main.next:SetText(("%s next: %s"):format(verb, target.name))
   else
     main.next:SetText("Next (nobody waiting)")
@@ -866,7 +955,7 @@ local function tooltipSummary(tt)
   local c, s = ns.Counts(), TorchcallDB.stats
   tt:AddLine("Torchcall")
   tt:AddLine(("%d waiting, %d answered"):format(c.new, c.replied), 1, 1, 1)
-  tt:AddLine(("%d whispered, %d invited, %d joined"):format(s.whispered, s.invited, s.joined), 1, 1, 1)
+  tt:AddLine(("%d whispered, %d invites confirmed, %d joined"):format(s.whispered, s.invited, s.joined), 1, 1, 1)
   local due = #ns.DueCheckIns()
   if due > 0 then tt:AddLine(("%d recruit%s due a check-in"):format(due, due == 1 and "" or "s"), 1, 0.5, 0.04) end
   tt:AddLine("Click to open. Drag to move.", 0.6, 0.6, 0.6)
@@ -934,7 +1023,7 @@ local function printHelp()
   print("  /torchcall search 10-20    search a level range for players with no guild")
   print("  /torchcall search          send the next queued search")
   print("  /torchcall class mage priest     only these classes (class all to clear)    /torchcall level 20-40")
-  print("  /torchcall next            whisper or invite the next player on the list")
+  print("  /torchcall next            whisper or prepare an invite for the next player on the list")
   print("  /torchcall group           add everyone in your party or raid who has no guild")
   print("  /torchcall answer <topic> <name>   one answer to someone who wrote back (topics: /torchcall answer)")
   print("  /torchcall checkin <name>  a how-is-it-going whisper to a recruit who joined a few days ago (no name: who is due)")
@@ -946,7 +1035,7 @@ local function printHelp()
   print("  /torchcall cap day <number|off>   and per day (now " .. (opts.daily > 0 and opts.daily or "no limit") .. ")")
   print("  /torchcall welcome [name]  greet in guild chat everyone who joined and is still waiting, or one player")
   print("  /torchcall autowelcome     send the welcome by itself when your recruit joins, where the game allows it, on or off (now " .. (opts.autowelcome and "on" or "off") .. ")")
-  print("  /torchcall pitch           whisper the opener before an invite to someone new, on or off (now " .. (opts.pitch and "on" or "off") .. ")")
+  print("  /torchcall pitch           whisper the opener before preparing an invite for someone new, on or off (now " .. (opts.pitch and "on" or "off") .. ")")
   print("  /torchcall need <classes>  classes the guild is short of (healers, tanks, priest mage, off): they come first")
   print("  /torchcall warm            who answered and is still waiting    /torchcall board   recruiters this week")
   print("  /torchcall recruits        your recruits and their first week   /torchcall step <name> discord")
@@ -979,12 +1068,12 @@ local function slash(input)
     act(ns.Next)
   elseif cmd == "stats" then
     local c, s = ns.Counts(), db.stats
-    ns.Print(("%d waiting, %d answered. All time: %d found, %d whispered, %d invited, %d joined, %d declined.")
+    ns.Print(("%d waiting, %d answered. All time: %d found, %d whispered, %d invites confirmed, %d joined, %d declined.")
       :format(c.new, c.replied, s.found, s.whispered, s.invited, s.joined, s.declined))
     local f = ns.Funnel()
     local function line(label, path)
       local n = path.stayed + path.left
-      print(("  %s: %d sent, %d joined%s%s"):format(label, path.invited, path.joined, path.rate and (" (" .. path.rate .. "%)") or "",
+      print(("  %s: %d confirmed, %d joined%s%s"):format(label, path.invited, path.joined, path.rate and (" (" .. path.rate .. "%)") or "",
         n > 0 and (", %d of %d still here a week later"):format(path.stayed, n) or ""))
     end
     print(("  Whispers: %d sent, %d answered%s"):format(f.whispered, f.replied, f.replyRate and (" (" .. f.replyRate .. "%)") or ""))
@@ -1076,8 +1165,8 @@ local function slash(input)
       or "When someone you recruited joins, the welcome line goes to guild chat by itself.")
   elseif cmd == "pitch" then
     if rest:lower() == "on" then opts.pitch = true elseif rest:lower() == "off" then opts.pitch = false else opts.pitch = not opts.pitch end
-    ns.Print(opts.pitch and "An invite to someone you have not spoken to now sends the opener first, then the invite."
-      or "An invite is now only the invite, with no whisper before it.")
+    ns.Print(opts.pitch and "Preparing an invite for someone you have not spoken to now sends the opener first, then opens the invite command."
+      or "Preparing an invite now opens only the invite command, with no whisper before it.")
     UI.Refresh()
   elseif cmd == "rotate" then
     opts.rotate = not opts.rotate
@@ -1191,7 +1280,7 @@ end
 
 -- Key bindings (Options, Keybindings, AddOns). A key press is one action, same as a click.
 BINDING_HEADER_TORCHCALL = "Torchcall"
-BINDING_NAME_TORCHCALL_NEXT = "Whisper or invite the next player"
+BINDING_NAME_TORCHCALL_NEXT = "Whisper or prepare an invite for the next player"
 BINDING_NAME_TORCHCALL_SEARCH = "Send the next who search"
 BINDING_NAME_TORCHCALL_TOGGLE = "Open or close the window"
 BINDING_NAME_TORCHCALL_WELCOME = "Welcome everyone who just joined"
@@ -1200,7 +1289,7 @@ function Torchcall_KeyNext()
   if not (TorchcallDB and opts) then return end
   local target = ns.NextTarget()
   if act(ns.Next) and target and not (main and main:IsShown()) then
-    ns.Print((opts.mode == "invite" and "Invited " or "Whispered ") .. target.name .. ".")
+    ns.Print((opts.mode == "invite" and "Invite ready to paste for " or "Whispered ") .. target.name .. ".")
   end
 end
 
